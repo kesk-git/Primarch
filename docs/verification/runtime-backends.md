@@ -249,9 +249,46 @@ rc=0
 rc=0
 ```
 
-`fm_backend_target_exists` (`bin/fm-backend.sh`) switched its tmux branch from `display-message` to an anchored `has-session -t "=<session>:=<window>"`, splitting the target on its first `:` and rejecting malformed targets, the same shape `fm_backend_tmux_kill` already uses (`bin/backends/tmux.sh`).
-A target with no `:` is a bare pane id (`%N`, the supervisor daemon's `$TMUX_PANE` default) or a session name, already exact, and is passed through unanchored, since `=` applies only to names.
+The same prefix resolution applies to a bare session-name-only target, and an empty target reads alive against any live server.
+Measured the same day on a second isolated server holding one session `revsess` with windows `firstwin` (index 0, `@0`, `%0`) and `secondwin` (index 1).
+
+```sh
+tmux -S "$SOCK" has-session -t "revse"; echo "rc=$?"
+tmux -S "$SOCK" has-session -t "=revse"; echo "rc=$?"
+tmux -S "$SOCK" has-session -t "=revsess"; echo "rc=$?"
+tmux -S "$SOCK" has-session -t ""; echo "rc=$?"
+tmux -S "$SOCK" has-session -t "=:=firstwin"; echo "rc=$?"
+tmux -S "$SOCK" has-session -t "=revsess:=0"; echo "rc=$?"
+tmux -S "$SOCK" has-session -t "=revsess:=9"; echo "rc=$?"
+tmux -S "$SOCK" has-session -t "=revsess:=firstwin.0"; echo "rc=$?"
+tmux -S "$SOCK" has-session -t "=%0"; echo "rc=$?"
+tmux -S "$SOCK" has-session -t "=@0"; echo "rc=$?"
+tmux -S "$SOCK" has-session -t "%99"; echo "rc=$?"
+```
+
+Observed output:
+
+```text
+bare session name, unanchored prefix   rc=0
+bare session name, anchored prefix     rc=1
+bare session name, anchored exact      rc=0
+empty target                           rc=0
+empty session part, anchored           rc=0
+anchored window INDEX 0                rc=0
+anchored window INDEX 9 (absent)       rc=1
+anchored window with pane suffix       rc=0
+anchored pane id                       rc=1
+anchored window id                     rc=1
+absent pane id, unanchored             rc=1
+```
+
+`fm_backend_tmux_anchor_target` (`bin/fm-backend.sh`) is the single owner of exact-target resolution derived from those measurements, shared by the presence probe and `fm_backend_tmux_kill` (`bin/backends/tmux.sh`) so the rule cannot drift between them.
+It anchors both parts of a `session:window` target, anchors a bare session name, rejects an empty or malformed target (empty target, empty session part, or more than one `:`) before any tmux command runs, and passes pane ids (`%N`) and window ids (`@N`) through unanchored because those are already exact and anchoring them makes them fail.
+Anchoring does not interfere with window-index or pane-suffix targeting, so the supervisor daemon's `firstmate:0` and `$TMUX_PANE` defaults are unaffected.
+`fm_backend_target_exists` (`bin/fm-backend.sh`) switched its tmux branch from `display-message` to `has-session` against that anchored target.
+It short-circuits a `remote:<id>` target to exists-true before probing, because that is the reserved placement marker a remotely placed secondmate's parent-side meta records rather than a local tmux session name; the authoritative remote state is read over the wire by `bin/fm-fleet-snapshot.sh` and `bin/fm-bootstrap.sh`.
 `pane_readable` (`bin/fm-crew-state.sh`) delegates its tmux branch to that one primitive rather than re-deriving the probe, so both readers move together.
+`fm_afk_launch_terminal_alive` and `fm_afk_launch_terminal_absent` (`bin/fm-afk-launch.sh`) remain independent tmux presence readers outside this primitive; neither had the `display-message` defect, and their targets are the away-daemon's own unique bare session names.
 `tests/fm-backend-tmux-smoke.test.sh` pins this against a real tmux server: a live window reads alive, a killed window reads dead while its own session and a window whose name extends it stay live, a bare name prefix of live windows reads dead, and a wholly nonexistent session reads dead.
 
 Audit of the other backends' `target-exists` branches for the same fall-back-to-current shape, run the same day:

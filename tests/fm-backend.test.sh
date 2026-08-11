@@ -532,6 +532,101 @@ test_meta_get_and_backend_of_meta() {
   pass "fm_meta_get / fm_backend_of_meta: read key=value, default backend to tmux"
 }
 
+# A remotely placed secondmate's parent-side meta records `window=remote:<id>`
+# and no `backend=` key, so fm_backend_of_meta defaults it to tmux and it
+# reaches the tmux presence probe. No local tmux command can observe a remote
+# endpoint, so the probe must not run one and must not report the endpoint gone.
+test_target_exists_remote_placement_never_probes_tmux() {
+  local dir fakebin log meta
+  dir=$TMP_ROOT/remote-placement; fakebin="$dir/fakebin"; log="$dir/tmux.log"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
+exit 1
+SH
+  chmod +x "$fakebin/tmux"
+  : > "$log"
+
+  meta=$dir/ios.meta
+  fm_write_meta "$meta" "window=remote:ios" "remote_host=buildbox" "kind=secondmate"
+  [ "$(fm_backend_of_meta "$meta")" = tmux ] \
+    || fail "the fixture must reproduce the real shape: no backend= key, defaulted to tmux"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_LOG="$log" \
+    fm_backend_target_exists tmux "$(fm_backend_target_of_meta "$meta")" "fm-ios" \
+    || fail "a remotely placed secondmate's endpoint must not read dead from a local probe"
+  [ ! -s "$log" ] \
+    || fail "a remote: target must never reach tmux"$'\n'"$(cat "$log")"
+
+  # The reserved prefix must not swallow a local endpoint that merely starts
+  # with the same letters, or it would become its own dead-reads-alive hole.
+  if PATH="$fakebin:$PATH" FM_FAKE_TMUX_LOG="$log" \
+    fm_backend_target_exists tmux "remotebox:fm-x" "fm-x"; then
+    fail "only the exact remote: placement prefix may bypass the tmux probe"
+  fi
+  grep -q 'has-session' "$log" || fail "a local session named remotebox must still be probed"
+
+  pass "fm_backend_target_exists: a remote: placement is not probed locally and does not read dead"
+}
+
+# Pure string contract, so it is asserted directly rather than through a live
+# server; the rc values each case encodes are measured against real tmux 3.7b in
+# docs/verification/runtime-backends.md and exercised end to end by
+# tests/fm-backend-tmux-smoke.test.sh.
+test_tmux_anchor_target_shapes() {
+  local out
+  out=$(fm_backend_tmux_anchor_target "firstmate:fm-x") \
+    || fail "a session:window target must anchor"
+  [ "$out" = "=firstmate:=fm-x" ] || fail "session:window anchored to '$out'"
+
+  out=$(fm_backend_tmux_anchor_target "firstmate:0") \
+    || fail "a session:index target must anchor"
+  [ "$out" = "=firstmate:=0" ] || fail "session:index anchored to '$out'"
+
+  out=$(fm_backend_tmux_anchor_target "revsess") \
+    || fail "a bare session name must anchor - tmux prefix-resolves it otherwise"
+  [ "$out" = "=revsess" ] || fail "bare session name anchored to '$out'"
+
+  # `=%0` and `=@0` do not resolve the pane and window they name.
+  out=$(fm_backend_tmux_anchor_target "%3") || fail "a pane id must be accepted"
+  [ "$out" = "%3" ] || fail "pane id must stay unanchored, got '$out'"
+  out=$(fm_backend_tmux_anchor_target "@3") || fail "a window id must be accepted"
+  [ "$out" = "@3" ] || fail "window id must stay unanchored, got '$out'"
+
+  # Each of these reads ALIVE if it reaches tmux, so it must never get there.
+  fm_backend_tmux_anchor_target "" 2>/dev/null && fail "an empty target must be refused"
+  fm_backend_tmux_anchor_target ":fm-x" 2>/dev/null && fail "an empty session part must be refused"
+  fm_backend_tmux_anchor_target "firstmate:" 2>/dev/null && fail "an empty window part must be refused"
+  fm_backend_tmux_anchor_target "a:b:c" 2>/dev/null && fail "a multi-colon target must be refused"
+
+  pass "fm_backend_tmux_anchor_target: anchors names, passes ids through, refuses empty and malformed"
+}
+
+# The empty/malformed refusal must hold at the probe boundary too: an empty
+# target handed to tmux has-session reads ALIVE against any live server.
+test_target_exists_refuses_empty_and_malformed_tmux_targets() {
+  local dir fakebin log t
+  dir=$TMP_ROOT/tmux-malformed; fakebin="$dir/fakebin"; log="$dir/tmux.log"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+
+  for t in "" ":fm-x" "firstmate:" "a:b:c"; do
+    : > "$log"
+    if PATH="$fakebin:$PATH" FM_FAKE_TMUX_LOG="$log" fm_backend_target_exists tmux "$t"; then
+      fail "target '$t' must not read alive (the fake tmux says yes to everything)"
+    fi
+    [ ! -s "$log" ] || fail "target '$t' must be refused before tmux runs"$'\n'"$(cat "$log")"
+  done
+
+  pass "fm_backend_target_exists: empty and malformed tmux targets are refused before tmux runs"
+}
+
 test_resolve_selector_three_forms() {
   local state=$TMP_ROOT/resolve-state fakebin out
   mkdir -p "$state"
@@ -1128,6 +1223,9 @@ test_backend_validate_refuses_unknown
 test_backend_source_shell_portable
 test_backend_validate_spawn_accepts_orca
 test_meta_get_and_backend_of_meta
+test_target_exists_remote_placement_never_probes_tmux
+test_tmux_anchor_target_shapes
+test_target_exists_refuses_empty_and_malformed_tmux_targets
 test_resolve_selector_three_forms
 test_backend_of_selector_matches_explicit_target_meta
 test_send_tmux_contract

@@ -819,6 +819,43 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
   esac
 }
 
+# fm_backend_tmux_anchor_target: the ONE owner of tmux exact-target
+# resolution. Prints TARGET in the form that makes tmux match it exactly, or
+# returns 1 for an empty or malformed target so no caller can hand tmux
+# something it would resolve to the caller's own current session/window.
+#
+# Unanchored, tmux resolves a name as exact, then start-of-name, then glob, on
+# BOTH the session and the window part, so a dead `firstmate:fm-auth` matches a
+# live sibling window `fm-auth-fix`, and a dead session `revsess` matches a live
+# `revsess-2`. Measured on tmux 3.7b (docs/verification/runtime-backends.md):
+#   - `=session:=window` anchors both parts, and still resolves a window INDEX
+#     (`=firstmate:=0` matches index 0) and a pane suffix (`=s:=w.0`).
+#   - An empty target reads ALIVE against any live server, and so does a target
+#     whose session part is empty (`=:=win`), hence the malformed rejection.
+#   - Pane ids (`%N`) and window ids (`@N`) are ALREADY exact and must stay
+#     unanchored - `=%0` and `=@0` both fail against the pane and window they
+#     name, so anchoring them would break the supervisor daemon's $TMUX_PANE
+#     default target.
+# This lives here rather than in bin/backends/tmux.sh so the presence probe
+# below can use it without a fm_backend_source step, which would turn an
+# adapter-load failure into a `dead` endpoint verdict. It runs no tmux command.
+fm_backend_tmux_anchor_target() {  # <target>
+  local target=${1:-} session window
+  [ -n "$target" ] || return 1
+  case "$target" in
+    *:*)
+      session=${target%%:*}
+      window=${target#*:}
+      case "$session:$window" in
+        :*|*:|*:*:*) return 1 ;;
+      esac
+      printf '%s' "=$session:=$window"
+      ;;
+    %*|@*) printf '%s' "$target" ;;
+    *) printf '%s' "=$target" ;;
+  esac
+}
+
 # fm_backend_target_exists: cheap, READ-ONLY existence check - does the
 # recorded TARGET endpoint still exist on BACKEND? Never starts a server or
 # session: for herdr this deliberately queries the pane directly instead of
@@ -833,39 +870,31 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
 # alive/dead read (recovery digests, the session-start fleet digest) all move
 # together when the probe changes.
 fm_backend_target_exists() {  # <backend> <target> [expected-label]
-  local backend=$1 target=$2 expected_label=${3:-} session pane
+  local backend=$1 target=$2 expected_label=${3:-} session pane anchored
   case "$backend" in
     tmux)
+      # `remote:<id>` is the reserved placement marker a remotely placed
+      # secondmate's parent-side meta records as its window (bin/fm-spawn.sh),
+      # not a local tmux session name - bin/fm-control.sh already refuses the
+      # shape on the grounds that it "can never match a local backend's
+      # required shape". That meta carries no `backend=` key, so
+      # fm_backend_of_meta defaults it to tmux and it arrives here. No local
+      # tmux command can observe a remote endpoint, so probing one only
+      # fabricates a death: the honest cheap read is that this reader has seen
+      # no evidence of removal. The authoritative remote state is read over the
+      # wire by bin/fm-fleet-snapshot.sh and bin/fm-bootstrap.sh, both of which
+      # branch on `remote_host` before ever reaching this predicate.
+      case "$target" in
+        remote:*) return 0 ;;
+      esac
       # has-session actually fails on a missing window ("can't find window")
       # or a missing session ("can't find session"). display-message does
       # not: it silently falls back to the client's current pane and returns
       # rc=0 for an absent window in a live session, and even for a session
       # that does not exist at all (verified empirically, tmux 3.7b - see
       # docs/verification/runtime-backends.md).
-      #
-      # A session:window target is anchored with tmux's `=` exact-match
-      # prefix on BOTH parts, the same split-and-reject shape
-      # fm_backend_tmux_kill uses (bin/backends/tmux.sh). Unanchored, tmux
-      # resolves each part as exact name, then start-of-name, then glob, so a
-      # dead `firstmate:fm-auth` reads alive off a live sibling window
-      # `fm-auth-fix` - the same dead-reads-alive class this predicate exists
-      # to catch, since window names are `fm-<task-id>` over free-form task
-      # slugs. A target with no ':' is a bare pane id (`%N`, the supervisor
-      # daemon's $TMUX_PANE default) or session name, already exact, and is
-      # passed through unanchored: `=` applies only to names.
-      case "$target" in
-        *:*)
-          session=${target%%:*}
-          pane=${target#*:}
-          case "$session:$pane" in
-            :*|*:|*:*:*) return 1 ;;
-          esac
-          tmux has-session -t "=$session:=$pane" >/dev/null 2>&1
-          ;;
-        *)
-          tmux has-session -t "$target" >/dev/null 2>&1
-          ;;
-      esac
+      anchored=$(fm_backend_tmux_anchor_target "$target") || return 1
+      tmux has-session -t "$anchored" >/dev/null 2>&1
       ;;
     herdr)
       fm_backend_source herdr || return 1

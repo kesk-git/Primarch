@@ -15,6 +15,9 @@ It returns rc=0, and can print the current pane's own id and name, even when the
 `tmux has-session -t "=<session>:=<window>"` is the correct read-only presence check; the `=` exact-match prefix is required on both parts, because tmux otherwise resolves each part as exact name, then start-of-name, then glob, so a dead `fm-auth` reads alive off a live `fm-auth-fix`.
 See `docs/verification/runtime-backends.md` "Endpoint-presence check (fm_backend_target_exists)" for the empirical evidence and exact commands.
 - The tmux presence-check contract had two independent call sites implementing the same logic, which is why the same wrong probe had to be fixed twice: `fm_backend_target_exists` in `bin/fm-backend.sh` and `pane_readable` in `bin/fm-crew-state.sh`.
-`fm_backend_target_exists` is now the single owner and `pane_readable` delegates to it for tmux; change the probe there and every reader follows.
+`fm_backend_target_exists` is now the owner for the meta-driven readers and `pane_readable` delegates to it for tmux; change the probe there and both follow.
+Two tmux presence readers deliberately stay outside it: `fm_afk_launch_terminal_alive` and `fm_afk_launch_terminal_absent` in `bin/fm-afk-launch.sh`, which probe the away-daemon's own unique bare session name.
+Neither ever had the `display-message` defect, but a future change to the presence contract has to be applied to them by hand.
+`fm_backend_tmux_anchor_target` in `bin/fm-backend.sh` is the single owner of tmux exact-target resolution, shared by that probe and `fm_backend_tmux_kill`.
 - Exit status alone is an unreliable existence signal across more than just tmux.
 The Zellij guarantee table in `docs/verification/runtime-backends.md` already records that zellij actions against missing targets return exit 0, which is why every zellij `target-exists` code path lists actual pane, session, or tab state and filters by exact id or name match instead of trusting a raw action's exit code.

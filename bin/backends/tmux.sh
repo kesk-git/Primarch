@@ -122,19 +122,18 @@ fm_backend_tmux_send_literal() {  # <target> <text>
 # fm_backend_tmux_kill: remove one explicitly named task window, best-effort.
 # Empty, omitted, and malformed targets return nonzero before invoking tmux so
 # tmux can never interpret an empty target as the caller's current window.
+# Exact-target resolution is fm_backend_tmux_anchor_target's (bin/fm-backend.sh)
+# alone, shared with the endpoint-presence probe. A bare name with no ':' is
+# still refused here regardless of what that helper would accept: this primitive
+# destroys a window, so it takes only a fully qualified session:window.
 fm_backend_tmux_kill() {  # <target>
-  local target=${1:-} session window
+  local target=${1:-} anchored
   case "$target" in
-    *:*)
-      session=${target%%:*}
-      window=${target#*:}
-      ;;
+    *:*) ;;
     *) return 1 ;;
   esac
-  case "$session:$window" in
-    :*|*:|*:*:*) return 1 ;;
-  esac
-  tmux kill-window -t "=$session:=$window" 2>/dev/null || true
+  anchored=$(fm_backend_tmux_anchor_target "$target") || return 1
+  tmux kill-window -t "$anchored" 2>/dev/null || true
 }
 
 # fm_backend_tmux_current_command: <target>'s live foreground process name -

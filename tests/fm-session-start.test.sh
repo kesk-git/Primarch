@@ -388,6 +388,20 @@ case "${1:-}" in
     ;;
   has-session)
     [ "$mode" = unreadable ] && exit 1
+    target=
+    prev=
+    for arg in "$@"; do
+      [ "$prev" = -t ] && target=$arg
+      prev=$arg
+    done
+    target=${target#=}
+    target=${target/:=/:}
+    # `missing` models a window the real inventory omits, and real tmux fails
+    # has-session for exactly that window - so presence must agree with the
+    # list-windows arm below rather than reporting a window it never lists.
+    if [ "$mode" = missing ] && [ ! -e "$spawned" ] && [ "${target##*:}" = "$mate_window" ]; then
+      exit 1
+    fi
     exit 0
     ;;
   kill-window)

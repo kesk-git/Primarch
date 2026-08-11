@@ -201,6 +201,28 @@ if fm_backend_target_exists tmux "$SESSION:${WINDOW%1}" 2>/dev/null; then
 fi
 pass "real tmux: fm_backend_target_exists reports a bare name prefix of live windows dead"
 
+# The session part prefix-resolves the same way, both inside a session:window
+# target and for a bare session-name-only target.
+fm_backend_target_exists tmux "$SESSION" \
+  || fail "the live session itself must read alive as a bare session-name target"
+if fm_backend_target_exists tmux "${SESSION%e}" 2>/dev/null; then
+  fail "a bare session name that is only a PREFIX of the live session must read dead"
+fi
+if fm_backend_target_exists tmux "${SESSION%e}:$SIBLING" 2>/dev/null; then
+  fail "a session name that is only a PREFIX of the live session must read dead"
+fi
+pass "real tmux: fm_backend_target_exists anchors the session part too, bare and qualified"
+
+# A pane id is already exact and must stay unanchored - `=%N` resolves nothing.
+live_pane=$(tmux display-message -p -t "$SESSION:$SIBLING" '#{pane_id}')
+[ -n "$live_pane" ] || fail "could not read a live pane id to check pane-id targeting"
+fm_backend_target_exists tmux "$live_pane" \
+  || fail "a live pane id target must read alive (the supervisor daemon's \$TMUX_PANE default)"
+if fm_backend_target_exists tmux '%999' 2>/dev/null; then
+  fail "an absent pane id must read dead"
+fi
+pass "real tmux: fm_backend_target_exists reads bare pane-id targets alive and dead correctly"
+
 if fm_backend_target_exists tmux "no-such-session-xyz:no-such-window-xyz" 2>/dev/null; then
   fail "fm_backend_target_exists should report a wholly nonexistent session dead"
 fi
