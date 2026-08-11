@@ -136,13 +136,21 @@ fm_backend_tmux_send_literal() {  # <target> <text>
 # still refused here regardless of what that helper would accept: this primitive
 # destroys a window, so it takes only a fully qualified session:window.
 fm_backend_tmux_kill() {  # <target>
-  local target=${1:-} anchored
+  local target=${1:-} window_id
   case "$target" in
     *:*) ;;
     *) return 1 ;;
   esac
-  anchored=$(fm_backend_tmux_anchor_target "$target") || return 1
-  tmux kill-window -t "$anchored" 2>/dev/null || true
+  fm_backend_tmux_anchor_target "$target" >/dev/null || return 1
+  # Resolve the window through the shared inventory owner and kill THAT window
+  # by its `@id`, never by a composed name string. Handing tmux
+  # `=<session>:=<window>` is destructive here, not merely wrong: tmux reads a
+  # literal `.` as the pane separator, so killing a target `sess:fm-v1.0` that
+  # names no window at all resolved to live window `fm-v1` pane 0 and destroyed
+  # that different worker's window (measured, tmux 3.7b), while the real dotted
+  # window `sess:fm-v1.2-fix` survived as a silent no-op.
+  window_id=$(fm_backend_tmux_window_id "${target%%:*}" "${target#*:}") || return 0
+  tmux kill-window -t "$window_id" 2>/dev/null || true
 }
 
 # fm_backend_tmux_current_command: <target>'s live foreground process name -

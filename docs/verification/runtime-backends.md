@@ -288,7 +288,7 @@ Measured the same day: with only `firstmate-old` alive, `has-session -t firstmat
 Unanchored, `fm_backend_tmux_container_ensure` would therefore report the `firstmate` session present without creating it, the task window would really be created in `firstmate-old`, and the meta would record `firstmate:fm-<id>` - which the anchored read then reports dead for a live worker.
 Both that function and `muse_worker_meta_api_key_present` (`bin/fm-spawn.sh`) now anchor through the same helper; `show-environment -t "=<session>"` was confirmed to accept the anchored form.
 It anchors both parts of a `session:window` target, anchors a bare session name, rejects an empty or malformed target (empty target, empty session part, or more than one `:`) before any tmux command runs, and passes pane ids (`%N`) and window ids (`@N`) through unanchored because those are already exact and anchoring them makes them fail.
-Anchoring does not interfere with window-index or pane-suffix targeting, so the supervisor daemon's `firstmate:0` and `$TMUX_PANE` defaults are unaffected.
+Anchoring does not interfere with window-index targeting, so the supervisor daemon's `firstmate:0` default is unaffected; pane-suffix targeting is handled separately, below.
 
 No tmux target syntax can name a window whose name contains a literal `.`, because tmux splits the window part on `.` as the pane separator.
 Task ids may contain `.` (`fm_backend_endpoint_atom_valid` allows it) and a task's window is named `fm-<task-id>`, so this is reachable through the ordinary spawn path.
@@ -331,11 +331,14 @@ Exactness is preserved in every part: measured on the same server, `fm-v1` and `
 A bare session-name target takes the same trailing-colon form (`has-session -t "=<name>:"`), which is exact and dot-safe: `=my.sess:` succeeds while `=my:` and `=nosuch.x:` both fail.
 Bare pane ids (`%N`) and window ids (`@N`) are already exact and unambiguous, so they stay on a plain `has-session`; anchoring them makes them fail.
 
-`session:window.pane` is deliberately NOT a shape this predicate resolves.
-It cannot be, because a window may legitimately be named `window.pane`: with a live `fm-v1` and no window named `fm-v1.0`, the string `fm-v1.0` is either an absent window or the live window's pane 0, and nothing distinguishes them.
-Every target this fleet records is a window identity (`$SES:fm-<task-id>`), so the window-name reading is the correct one, and taking it is what makes a genuinely gone `fm-v1.0` read dead instead of alive off its live sibling.
+A window part that resolves to no real window is re-read once as a `<window>.<pane-index>` spec, confirmed with `list-panes` against the resolved base window's `@id`.
+That keeps the documented `FM_SUPERVISOR_TARGET` pane shape working: measured on the same server, a window `base` split into panes 0 and 1 reads alive for `base.0` and `base.1`, dead for `base.9`, and dead for `no-such-window.0`.
+The re-read is refused when the window part starts with `fm-`, this fleet's reserved task-window prefix (`bin/fm-spawn.sh` names every task window `fm-<task-id>`).
+Nothing in tmux distinguishes the two readings of such a string - with a live `fm-v1`, the string `fm-v1.0` is equally "an absent window" or "that window's live pane 0", and `send-keys` succeeds either way - so the prefix is what decides it, and it decides in favour of the window identity: a genuinely gone task `fm-v1.0` reads dead rather than alive off its live sibling.
 Both calls are read-only: against a socket path with no server, `list-windows` prints `error connecting` and creates no socket.
-`fm_backend_target_exists` (`bin/fm-backend.sh`) switched its tmux branch from `display-message` to `has-session` against that anchored target.
+
+`fm_backend_tmux_kill` (`bin/backends/tmux.sh`) resolves through the same owner and kills the resolved `@id`.
+Handing tmux a composed name there is destructive rather than merely wrong: measured on the same server, `kill-window -t "=killsess:=fm-v1.0"` against a session holding `base`, `fm-v1`, and `fm-v1.2-fix` - with no window named `fm-v1.0` at all - returned rc=0 and destroyed the live window `fm-v1`.
 The primitive holds no opinion about placement: it probes whatever target it is handed.
 A remotely placed worker is recognized by its meta's `remote_host` key (`fm_backend_is_remote_placement`), the same signal `bin/fm-control.sh` and `bin/fm-fleet-snapshot.sh` already route on, and the two cheap local readers that would otherwise fabricate a death for one - `bin/fm-session-start.sh`'s digest and `bin/fm-crew-state.sh`'s no-run fallback - consult it before probing.
 That key is deliberately not the `window=remote:<id>` string those metas also carry: an ordinary local task records the same string whenever the ambient tmux session is itself named `remote`, so keying on it would report every crashed window in that session alive.

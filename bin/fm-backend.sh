@@ -872,6 +872,50 @@ fm_backend_tmux_anchor_target() {  # <target>
   esac
 }
 
+# fm_backend_tmux_resolve_window: the ONE owner of "which real window does this
+# session:window part name?". Prints that window's `@id` and returns 0, or
+# returns 1 if the session's live inventory holds no such window.
+#
+# It never hands tmux a composed `session:window` NAME string, because tmux's
+# target parser reads a literal `.` as the pane separator and such a string is
+# ambiguous in both directions (see fm_backend_target_exists below and
+# docs/verification/runtime-backends.md). The session part is anchored AND given
+# a trailing `:` so tmux parses it as a session, not a window - without the
+# colon a session name containing a `.` fails the same way. The window part is
+# then compared literally against that session's real window names, indexes, and
+# window ids, so it stays exact: a name that is only a prefix of a live window
+# misses.
+#
+# Returning the `@id` rather than a boolean is what lets the destructive
+# `fm_backend_tmux_kill` act on the resolved window itself instead of on a name
+# string tmux would re-parse.
+fm_backend_tmux_resolve_window() {  # <session> <window-part>
+  local session=$1 want=$2
+  [ -n "$session" ] && [ -n "$want" ] || return 1
+  tmux list-windows -t "=$session:" -F '#{window_name}
+#{window_index}
+#{window_id}' 2>/dev/null | grep -Fqx "$want"
+}
+
+# fm_backend_tmux_window_id: the same resolution, printing the matched window's
+# `@id`. Separate from the boolean above only because the destructive kill path
+# needs an object to act on rather than a yes/no - the session-target and
+# literal-match rules are identical.
+fm_backend_tmux_window_id() {  # <session> <window-part>
+  local session=$1 want=$2 out
+  [ -n "$session" ] && [ -n "$want" ] || return 1
+  out=$(tmux list-windows -t "=$session:" -F '#{window_id} #{window_name}
+#{window_id} #{window_index}
+#{window_id} #{window_id}' 2>/dev/null \
+    | while IFS=' ' read -r wid rest; do
+        [ "$rest" = "$want" ] || continue
+        printf '%s' "$wid"
+        break
+      done)
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
+}
+
 # fm_backend_target_exists: cheap, READ-ONLY existence check - does the
 # recorded TARGET endpoint still exist on BACKEND? Never starts a server or
 # session: for herdr this deliberately queries the pane directly instead of
@@ -886,7 +930,7 @@ fm_backend_tmux_anchor_target() {  # <target>
 # alive/dead read (recovery digests, the session-start fleet digest) all move
 # together when the probe changes.
 fm_backend_target_exists() {  # <backend> <target> [expected-label]
-  local backend=$1 target=$2 expected_label=${3:-} session pane anchored
+  local backend=$1 target=$2 expected_label=${3:-} session pane anchored window_id
   case "$backend" in
     tmux)
       # display-message is unusable here: it silently falls back to the
@@ -905,20 +949,22 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
       # a task's window is named `fm-<task-id>`, so both directions are
       # reachable from an ordinary spawn.
       #
-      # Instead the parts are resolved separately against real state, the same
-      # list-and-filter shape the recovery-grade fm_backend_tmux_agent_state
-      # uses. The session part is anchored AND given a trailing `:` so tmux
-      # parses it as a session rather than a window target - without the colon,
-      # a session name containing a `.` fails the same way ("can't find pane").
-      # The window part is then a literal whole-line `grep -Fqx` against that
-      # session's real windows, matched by name, index, or window id.
+      # Instead the parts are resolved separately against real state through
+      # fm_backend_tmux_resolve_window, the same list-and-filter shape the
+      # recovery-grade fm_backend_tmux_agent_state uses.
       #
-      # Consequence, deliberate: `session:window.pane` is not a shape this
-      # predicate resolves. It cannot be, while a window may legitimately be
-      # NAMED `window.pane` - and every target recorded by this fleet is a
-      # window identity (`$SES:fm-<task-id>`), never a pane suffix. Bare pane
-      # ids (`%N`) and window ids (`@N`) are already exact and unambiguous, so
-      # they stay on has-session; anchoring them would break them.
+      # A window part that resolves to no real window is then re-read ONCE as a
+      # `<window>.<pane-index>` spec, which is the documented FM_SUPERVISOR_TARGET
+      # pane shape (docs/configuration.md) and is what bin/fm-send.sh can still
+      # deliver to. That re-read is refused for a window part starting with
+      # `fm-`, this fleet's reserved task-window prefix (bin/fm-spawn.sh names
+      # every task window `fm-<task-id>`): those are always window identities, so
+      # a gone task `fm-v1.0` must NOT read alive off live sibling `fm-v1`'s
+      # pane 0. Without that guard the two readings are indistinguishable - both
+      # are a live pane to tmux - and the dead-reads-alive case wins by accident.
+      #
+      # Bare pane ids (`%N`) and window ids (`@N`) are already exact and
+      # unambiguous, so they stay on has-session; anchoring them breaks them.
       anchored=$(fm_backend_tmux_anchor_target "$target") || return 1
       case "$target" in
         %*|@*)
@@ -927,9 +973,16 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
         *:*)
           session=${target%%:*}
           pane=${target#*:}
-          tmux list-windows -t "=$session:" -F '#{window_name}
-#{window_index}
-#{window_id}' 2>/dev/null | grep -Fqx "$pane"
+          fm_backend_tmux_resolve_window "$session" "$pane" && return 0
+          case "$pane" in
+            fm-*) return 1 ;;
+            *.[0-9]|*.[0-9][0-9]|*.[0-9][0-9][0-9]) ;;
+            *) return 1 ;;
+          esac
+          fm_backend_tmux_resolve_window "$session" "${pane%.*}" || return 1
+          window_id=$(fm_backend_tmux_window_id "$session" "${pane%.*}") || return 1
+          tmux list-panes -t "$window_id" -F '#{pane_index}' 2>/dev/null \
+            | grep -Fqx "${pane##*.}"
           ;;
         *)
           tmux has-session -t "=$target:" >/dev/null 2>&1

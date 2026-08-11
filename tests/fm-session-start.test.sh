@@ -389,15 +389,21 @@ case "${1:-}" in
     esac
     ;;
   list-windows)
+    # Two readers share this inventory: the presence check matches a bare
+    # window part, and the kill path matches "<window-id> <window-part>" pairs
+    # so it can act on the resolved id instead of a name string. Emitting both
+    # line shapes answers each without inspecting the -F format; neither
+    # reader's literal match can hit the other's lines.
+    emit() { printf '%s\n@1 %s\n@1 1\n@1 @1\n' "$1" "$1"; }
     if [ "$mode" = unreadable ] && [ ! -e "$spawned" ] && [ ! -e "$killed" ]; then
       exit 1
     fi
     if [ -e "$spawned" ]; then
-      printf '%s\n' "$mate_window"
+      emit "$mate_window"
     elif [ ! -e "$killed" ] && { [ "$mode" = ambiguous ] || [ "$mode" = shell ]; }; then
-      printf '%s\n' "$mate_window"
+      emit "$mate_window"
     else
-      printf '%s\n' main
+      emit main
     fi
     exit 0
     ;;
@@ -1289,7 +1295,11 @@ EOF
 
   out=$(network_stage_report "$home" "$root")
   assert_not_contains "$out" "SECONDMATE_LIVENESS:" "successful bare-shell recovery should stay non-actionable"
-  assert_contains "$(cat "$log")" "kill-window -t =firstmate:=fm-$SESSION_START_SECOND_MATE_ID" \
+  # The kill path resolves the window from the session inventory and acts on the
+  # resolved id; a composed session:window name is destructive there, because
+  # tmux reads a `.` in the window part as a pane separator and can land on a
+  # different live window (see tests/fm-backend-tmux-smoke.test.sh).
+  assert_contains "$(cat "$log")" "kill-window -t @1" \
     "the proven bare-shell path did not remove its existing dead endpoint"
   assert_contains "$(cat "$log")" "new-window" "the proven bare-shell path did not relaunch"
   pass "session start: the proven bare-shell recovery path remains intact"

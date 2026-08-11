@@ -79,11 +79,11 @@ case "\${1:-}" in
     ;;
   list-windows)
     case '$inventory' in
-      missing) printf '%s\n' main ; exit 0 ;;
+      missing) printf '%s\n@1 %s\n@1 1\n@1 @1\n' main main ; exit 0 ;;
       missing-session) printf '%s\n' "can't find session: sess" >&2; exit 1 ;;
       missing-server) printf '%s\n' "no server running on /tmp/tmux-test/default" >&2; exit 1 ;;
       missing-socket) printf '%s\n' "error connecting to /tmp/tmux-test/default (No such file or directory)" >&2; exit 1 ;;
-      present) printf '%s\n' fm-sm1 ; exit 0 ;;
+      present) printf '%s\n@1 %s\n@1 1\n@1 @1\n' fm-sm1 fm-sm1 ; exit 0 ;;
       *) printf '%s\n' "permission denied" >&2; exit 1 ;;
     esac
     ;;
@@ -288,9 +288,9 @@ case "${1:-}" in
     ;;
   list-windows)
     case "$mode" in
-      missing) printf '%s\n' main; exit 0 ;;
+      missing) printf '%s\n@1 %s\n@1 1\n@1 @1\n' main main; exit 0 ;;
       unreadable) exit 1 ;;
-      *) [ -e "${FM_TMUX_CALL_LOG:?}.killed" ] || printf '%s\n' fm-sm1; exit 0 ;;
+      *) [ -e "${FM_TMUX_CALL_LOG:?}.killed" ] || printf '%s\n@1 %s\n@1 1\n@1 @1\n' fm-sm1 fm-sm1; exit 0 ;;
     esac
     ;;
   new-window|kill-window)
@@ -363,7 +363,7 @@ test_sweep_respawns_confirmed_dead_secondmate() {
 
   assert_not_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: respawned" \
     "a successfully respawned secondmate should be handled silently"
-  assert_contains "$(cat "$log")" "kill-window -t =firstmate:=fm-sm1" \
+  assert_contains "$(cat "$log")" "kill-window -t @1" \
     "the stale endpoint must be killed before respawn (tmux refuses a same-named window over a live one)"
   assert_contains "$(cat "$log")" "new-window" \
     "a confirmed-dead secondmate should actually be relaunched"

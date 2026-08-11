@@ -1044,6 +1044,13 @@ make_teardown_fakebin() {  # <dir> -> echoes fakebin dir; logs tmux+treehouse ca
 #!/usr/bin/env bash
 set -u
 { printf 'tmux'; for a in "$@"; do printf '\x1f%s' "$a"; done; printf '\n'; } >> "${FM_TMUX_LOG:?}"
+# The refactored kill resolves its window from the session's real inventory and
+# kills the resolved id, so the fake has to own a window for that to find.
+if [ "${1:-}" = list-windows ]; then
+  for w in ${FM_FAKE_TMUX_WINDOWS:-}; do
+    printf '@1 %s\n@1 1\n@1 @1\n' "$w"
+  done
+fi
 exit 0
 SH
   cat > "$fb/treehouse" <<'SH'
@@ -1067,7 +1074,7 @@ run_teardown_case() {
   : > "$log"
   env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$fmroot" \
     FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
-    FM_TMUX_LOG="$log" \
+    FM_TMUX_LOG="$log" FM_FAKE_TMUX_WINDOWS="fm-$id" \
     "$script" "$id"
 }
 
@@ -1126,8 +1133,17 @@ test_teardown_conformance_old_vs_new() {
   # exact-selector contract belongs to the current script, asserted below.
   assert_contains "$(tr -d '=' < "$log_old")" "tmux"$'\x1f''kill-window'$'\x1f''-t'$'\x1f'"firstmate:fm-$id" \
     "legacy teardown fixture did not exercise tmux window cleanup for the task"
-  assert_contains "$(cat "$log_new")" "tmux"$'\x1f''kill-window'$'\x1f''-t'$'\x1f'"=firstmate:=fm-$id" \
-    "teardown did not call tmux kill-window with exact session and window selectors"
+  # The current script resolves the window from the session's real inventory and
+  # kills the resolved id. Handing tmux the composed `=session:=window` name was
+  # destructive: tmux reads a `.` in the window part as a pane separator, so a
+  # target naming no window at all resolved to a DIFFERENT live window and
+  # killed it (see tests/fm-backend-tmux-smoke.test.sh).
+  assert_contains "$(cat "$log_new")" "tmux"$'\x1f''list-windows'$'\x1f''-t'$'\x1f'"=firstmate:" \
+    "teardown did not resolve the task window from the session inventory"
+  assert_contains "$(cat "$log_new")" "tmux"$'\x1f''kill-window'$'\x1f''-t'$'\x1f''@1' \
+    "teardown did not call tmux kill-window on the resolved window id"
+  assert_not_contains "$(cat "$log_new")" "tmux"$'\x1f''kill-window'$'\x1f''-t'$'\x1f'"=firstmate:=fm-$id" \
+    "teardown must not kill by a composed session:window name"
 
   pass "fm-teardown.sh: treehouse return remains compatible while tmux cleanup uses exact selectors"
 }

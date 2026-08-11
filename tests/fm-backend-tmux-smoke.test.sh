@@ -270,16 +270,51 @@ fm_backend_target_exists tmux "$SESSION:$COLLIDER" \
   || fail "the live base window of the pane-suffix collision must still read alive"
 pass "real tmux: the live base window of a pane-suffix collision still reads alive"
 
-# Removed by window id: no `-t` name syntax can address a dotted window name,
-# which is the whole point of this case (fm_backend_tmux_kill silently no-ops
-# on one - a pre-existing gap in the destructive path, out of scope here).
-dotted_id=$(tmux list-windows -t "=$SESSION:" -F '#{window_id} #{window_name}' \
-  | while read -r wid wname; do [ "$wname" = "$DOTTED" ] && printf '%s' "$wid"; done)
-[ -n "$dotted_id" ] || fail "could not resolve the dotted window's id"
-tmux kill-window -t "$dotted_id" 2>/dev/null || true
-if tmux list-windows -t "=$SESSION:" -F '#{window_name}' | grep -Fqx "$DOTTED"; then
-  fail "could not remove the dotted-name window to check the dead read"
+# `session:window.pane` IS a supported target shape (a documented
+# FM_SUPERVISOR_TARGET form, and one fm-send can deliver to), so a live pane
+# must read alive. It is distinguished from the collision above by the fleet's
+# own reserved `fm-` task-window prefix: `fm-<task-id>` is always a window
+# identity, so `fm-v1.0` stays dead while `<other>.<pane>` resolves.
+PANEWIN="split-check"
+fm_backend_tmux_create_task "$SESSION" "$PANEWIN" "$HOME" \
+  || fail "could not create the pane-suffix window"
+tmux split-window -t "=$SESSION:=$PANEWIN" \
+  || fail "could not split the pane-suffix window"
+tmux list-panes -t "=$SESSION:=$PANEWIN" -F '#{pane_index}' | grep -Fqx 1 \
+  || fail "the pane-suffix window must have a pane 1 for this case to be meaningful"
+
+fm_backend_target_exists tmux "$SESSION:$PANEWIN.1" \
+  || fail "a LIVE, deliverable pane target must read alive"
+fm_backend_target_exists tmux "$SESSION:$PANEWIN.0" \
+  || fail "pane 0 of a live window must read alive"
+if fm_backend_target_exists tmux "$SESSION:$PANEWIN.9" 2>/dev/null; then
+  fail "an absent pane index must read dead"
 fi
+if fm_backend_target_exists tmux "$SESSION:no-such-window.0" 2>/dev/null; then
+  fail "a pane suffix on an absent window must read dead"
+fi
+pass "real tmux: a live session:window.pane target reads alive, absent pane and window read dead"
+
+# The kill path must resolve the same way the read path does. Handing tmux a
+# composed `=<session>:=<window>` name is destructive here, not merely wrong:
+# tmux reads the `.` as a pane separator, so killing a target that names NO
+# window resolved to a different live window and destroyed it.
+if fm_backend_target_exists tmux "$SESSION:$COLLIDER"; then
+  fm_backend_tmux_kill "$SESSION:$COLLIDER.0" \
+    || fail "fm_backend_tmux_kill must stay best-effort on a target that names no window"
+  fm_backend_target_exists tmux "$SESSION:$COLLIDER" \
+    || fail "killing '$SESSION:$COLLIDER.0' (which names NO window) destroyed the live window $COLLIDER"
+  pass "real tmux: fm_backend_tmux_kill does not destroy a different live window on a pane-suffix collision"
+fi
+
+# The dotted window is killed through the public interface: no `-t` name syntax
+# can address it, so this also pins that kill resolves by inventory.
+fm_backend_tmux_kill "$SESSION:$DOTTED" \
+  || fail "fm_backend_tmux_kill failed on the dotted-name window"
+if tmux list-windows -t "=$SESSION:" -F '#{window_name}' | grep -Fqx "$DOTTED"; then
+  fail "fm_backend_tmux_kill did not remove the dotted-name window"
+fi
+pass "real tmux: fm_backend_tmux_kill removes a window whose name contains a dot"
 if fm_backend_target_exists tmux "$SESSION:$DOTTED" 2>/dev/null; then
   fail "a REMOVED window whose name contains a dot must read dead"
 fi
