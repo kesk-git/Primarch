@@ -1033,6 +1033,40 @@ test_no_run_idle_secondmate_resolved_event_not_state() {
   pass "a trailing resolved: event does not corrupt state render (idle stays idle)"
 }
 
+# A remotely placed secondmate's endpoint lives on another host, so the local
+# liveness gate can never observe it. Reporting it gone would discard the status
+# log the remote worker keeps writing here, which is the only state this reader
+# has for it - and that reader feeds watcher/wake triage.
+test_remote_placement_reports_state_instead_of_gone_endpoint() {
+  reset_fakes
+  local d out; d=$(new_case remote-placement)
+  make_repo_on_branch "$d/wt" fm/feat-remote
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-remote.meta" \
+    "window=remote:feat-remote" "remote_host=buildbox" "worktree=$d/wt" "kind=secondmate"
+  printf 'working: building the ios target\n' > "$d/state/feat-remote.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  # Every local tmux probe fails, exactly as it does for a real remote endpoint.
+  FM_FAKE_TMUX_MISSING=1
+  out=$(run_crew_state "$d" feat-remote)
+  assert_not_contains "$out" "backend target gone" \
+    "a remote placement must not be reported as a gone local endpoint"
+  assert_contains "$out" "state: working" "a remote placement reports its recorded state"
+  assert_contains "$out" "building the ios target" "a remote placement keeps its status detail"
+
+  # The same window string WITHOUT remote_host is an ordinary local task in a
+  # tmux session named `remote`, and a dead endpoint there must still read gone.
+  fm_write_meta "$d/state/feat-local.meta" \
+    "window=remote:feat-local" "worktree=$d/wt" "kind=ship"
+  printf 'working: building locally\n' > "$d/state/feat-local.status"
+  out=$(run_crew_state "$d" feat-local)
+  assert_contains "$out" "backend target gone" \
+    "a local task in a session named 'remote' must still report a dead endpoint gone"
+
+  pass "a remote placement reports state; a local task in a session named 'remote' still reads gone"
+}
+
 test_dead_window_ignores_stale_status_log() {
   reset_fakes
   local d; d=$(new_case dead-window)
@@ -1347,6 +1381,7 @@ test_no_run_idle_pane_uses_keyed_log
 test_no_run_idle_pane_paused
 test_no_run_idle_pane_custom_paused_verb
 test_no_run_idle_secondmate_resolved_event_not_state
+test_remote_placement_reports_state_instead_of_gone_endpoint
 test_dead_window_ignores_stale_status_log
 test_dead_window_still_reports_terminal_run_step
 test_dead_window_still_reports_active_run_step

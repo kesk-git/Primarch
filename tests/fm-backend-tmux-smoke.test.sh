@@ -234,5 +234,33 @@ state=$(fm_backend_agent_state tmux "$TARGET")
 fm_backend_tmux_kill "$TARGET" || fail "fm_backend_tmux_kill on an already-dead target must stay best-effort (never fail)"
 pass "real tmux: kill removes the window and the readable session inventory authoritatively classifies it missing"
 
+# --- container_ensure agrees with the presence read -------------------------
+# The session-existence check that decides WHERE a task is written must resolve
+# names the same way the presence probe that READS it back does. A live
+# `firstmate-old` with no `firstmate` is the reachable disagreement: unanchored,
+# the probe succeeds by prefix, nothing is created, the window lands in
+# `firstmate-old`, and the recorded `firstmate:fm-<id>` then reads dead.
+
+tmux new-session -d -s firstmate-old -x 200 -y 50 \
+  || fail "could not create the prefix-colliding session"
+if tmux has-session -t "=firstmate" 2>/dev/null; then
+  fail "the fixture requires that no session is named exactly firstmate"
+fi
+
+ensured=$(unset TMUX; fm_backend_tmux_container_ensure) \
+  || fail "fm_backend_tmux_container_ensure failed"
+[ "$ensured" = firstmate ] || fail "container_ensure resolved to '$ensured', expected firstmate"
+tmux list-sessions -F '#{session_name}' | grep -qx firstmate \
+  || fail "container_ensure returned 'firstmate' without a session of exactly that name existing"
+
+ensured_window="fm-container-check"
+fm_backend_tmux_create_task "$ensured" "$ensured_window" "$HOME" \
+  || fail "could not create a task window in the ensured session"
+fm_backend_target_exists tmux "$ensured:$ensured_window" \
+  || fail "a task written to the ensured session must read alive through the presence probe"
+tmux list-windows -t "=firstmate" -F '#{window_name}' | grep -qx "$ensured_window" \
+  || fail "the task window was created in a prefix-matched session, not the ensured one"
+pass "real tmux: container_ensure and the presence probe agree on a prefix-colliding session name"
+
 cleanup_all
 trap - EXIT

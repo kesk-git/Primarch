@@ -60,11 +60,20 @@ fm_backend_tmux_send_text_submit() {  # <target> <text> <retries> <enter-sleep> 
 # firstmate itself runs inside tmux, else ensure a dedicated detached
 # "firstmate" session exists. Mirrors fm-spawn.sh's container-ensure block;
 # prints the resolved session name.
+#
+# The existence probe is anchored through fm_backend_tmux_anchor_target, the
+# same owner the endpoint-presence read uses, so the side that decides WHERE a
+# task is written agrees with the side that reads it back. Unanchored, this
+# probe prefix-resolves: with only `firstmate-old` alive it succeeds, so no
+# `firstmate` session is created, the window is really made in `firstmate-old`,
+# and the meta records `firstmate:fm-<id>` - a live task that then reads dead
+# on every endpoint reader.
 fm_backend_tmux_container_ensure() {
   if [ -n "${TMUX:-}" ]; then
     tmux display-message -p '#S'
   else
-    tmux has-session -t firstmate 2>/dev/null || tmux new-session -d -s firstmate
+    tmux has-session -t "$(fm_backend_tmux_anchor_target firstmate)" 2>/dev/null \
+      || tmux new-session -d -s firstmate
     printf 'firstmate'
   fi
 }

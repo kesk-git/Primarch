@@ -349,6 +349,22 @@ fm_backend_of_meta() {  # <meta-file>
   printf '%s' "${v:-tmux}"
 }
 
+# fm_backend_is_remote_placement: 0 if <meta-file> records a worker placed on
+# another host. The ONE owner of that question, so the cheap local endpoint
+# readers decide it the same way bin/fm-control.sh and bin/fm-fleet-snapshot.sh
+# already do - on `remote_host`, the fact that the worker IS remote.
+#
+# It is deliberately NOT the `window=remote:<id>` string those metas also carry.
+# A tmux session named `remote` makes an ordinary LOCAL task record
+# `window=remote:fm-<id>` too (fm_backend_tmux_container_ensure returns `#S`
+# verbatim), so keying on the string would report every crashed window in that
+# session alive - the exact dead-reads-alive failure this predicate exists to
+# catch. It would also let a user-typed `remote:anything` pass bin/fm-send.sh's
+# live-endpoint gate.
+fm_backend_is_remote_placement() {  # <meta-file>
+  [ -n "$(fm_meta_get "$1" remote_host)" ]
+}
+
 fm_backend_target_of_meta() {  # <meta-file>
   local meta=$1 backend terminal window
   backend=$(fm_backend_of_meta "$meta")
@@ -873,20 +889,6 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
   local backend=$1 target=$2 expected_label=${3:-} session pane anchored
   case "$backend" in
     tmux)
-      # `remote:<id>` is the reserved placement marker a remotely placed
-      # secondmate's parent-side meta records as its window (bin/fm-spawn.sh),
-      # not a local tmux session name - bin/fm-control.sh already refuses the
-      # shape on the grounds that it "can never match a local backend's
-      # required shape". That meta carries no `backend=` key, so
-      # fm_backend_of_meta defaults it to tmux and it arrives here. No local
-      # tmux command can observe a remote endpoint, so probing one only
-      # fabricates a death: the honest cheap read is that this reader has seen
-      # no evidence of removal. The authoritative remote state is read over the
-      # wire by bin/fm-fleet-snapshot.sh and bin/fm-bootstrap.sh, both of which
-      # branch on `remote_host` before ever reaching this predicate.
-      case "$target" in
-        remote:*) return 0 ;;
-      esac
       # has-session actually fails on a missing window ("can't find window")
       # or a missing session ("can't find session"). display-message does
       # not: it silently falls back to the client's current pane and returns

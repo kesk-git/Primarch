@@ -282,11 +282,18 @@ anchored window id                     rc=1
 absent pane id, unanchored             rc=1
 ```
 
-`fm_backend_tmux_anchor_target` (`bin/fm-backend.sh`) is the single owner of exact-target resolution derived from those measurements, shared by the presence probe and `fm_backend_tmux_kill` (`bin/backends/tmux.sh`) so the rule cannot drift between them.
+`fm_backend_tmux_anchor_target` (`bin/fm-backend.sh`) is the single owner of exact-target resolution derived from those measurements, shared by the presence probe, `fm_backend_tmux_kill` (`bin/backends/tmux.sh`), and the two session-existence checks that decide where a task is written, so the rule cannot drift between them.
+Anchoring the read side alone is not enough, because the write side then disagrees about which session a name means.
+Measured the same day: with only `firstmate-old` alive, `has-session -t firstmate` returns rc=0 and `has-session -t "=firstmate"` returns rc=1.
+Unanchored, `fm_backend_tmux_container_ensure` would therefore report the `firstmate` session present without creating it, the task window would really be created in `firstmate-old`, and the meta would record `firstmate:fm-<id>` - which the anchored read then reports dead for a live worker.
+Both that function and `muse_worker_meta_api_key_present` (`bin/fm-spawn.sh`) now anchor through the same helper; `show-environment -t "=<session>"` was confirmed to accept the anchored form.
 It anchors both parts of a `session:window` target, anchors a bare session name, rejects an empty or malformed target (empty target, empty session part, or more than one `:`) before any tmux command runs, and passes pane ids (`%N`) and window ids (`@N`) through unanchored because those are already exact and anchoring them makes them fail.
 Anchoring does not interfere with window-index or pane-suffix targeting, so the supervisor daemon's `firstmate:0` and `$TMUX_PANE` defaults are unaffected.
 `fm_backend_target_exists` (`bin/fm-backend.sh`) switched its tmux branch from `display-message` to `has-session` against that anchored target.
-It short-circuits a `remote:<id>` target to exists-true before probing, because that is the reserved placement marker a remotely placed secondmate's parent-side meta records rather than a local tmux session name; the authoritative remote state is read over the wire by `bin/fm-fleet-snapshot.sh` and `bin/fm-bootstrap.sh`.
+The primitive holds no opinion about placement: it probes whatever target it is handed.
+A remotely placed worker is recognized by its meta's `remote_host` key (`fm_backend_is_remote_placement`), the same signal `bin/fm-control.sh` and `bin/fm-fleet-snapshot.sh` already route on, and the two cheap local readers that would otherwise fabricate a death for one - `bin/fm-session-start.sh`'s digest and `bin/fm-crew-state.sh`'s no-run fallback - consult it before probing.
+That key is deliberately not the `window=remote:<id>` string those metas also carry: an ordinary local task records the same string whenever the ambient tmux session is itself named `remote`, so keying on it would report every crashed window in that session alive.
+The authoritative remote state is read over the wire by `bin/fm-fleet-snapshot.sh` and `bin/fm-bootstrap.sh`.
 `pane_readable` (`bin/fm-crew-state.sh`) delegates its tmux branch to that one primitive rather than re-deriving the probe, so both readers move together.
 `fm_afk_launch_terminal_alive` and `fm_afk_launch_terminal_absent` (`bin/fm-afk-launch.sh`) remain independent tmux presence readers outside this primitive; neither had the `display-message` defect, and their targets are the away-daemon's own unique bare session names.
 `tests/fm-backend-tmux-smoke.test.sh` pins this against a real tmux server: a live window reads alive, a killed window reads dead while its own session and a window whose name extends it stay live, a bare name prefix of live windows reads dead, and a wholly nonexistent session reads dead.

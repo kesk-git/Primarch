@@ -686,7 +686,12 @@ for meta in "$STATE"/*.meta; do
 
   window=$(fm_meta_get "$meta" window)
   target=$(fm_backend_target_of_meta "$meta")
-  if [ -n "$window" ]; then
+  if fm_backend_is_remote_placement "$meta"; then
+    # No local command can observe an endpoint on another host, so probing one
+    # here would only fabricate a death. fm-bootstrap.sh's secondmate liveness
+    # pass reads that host over the wire; this digest reports the placement.
+    printf 'endpoint: remote (host=%s window=%s)\n' "$(fm_meta_get "$meta" remote_host)" "$window"
+  elif [ -n "$window" ]; then
     backend=$(fm_backend_of_meta "$meta")
     if fm_backend_target_exists "$backend" "${target:-$window}" "fm-$id"; then
       printf 'endpoint: alive (backend=%s window=%s)\n' "$backend" "$window"

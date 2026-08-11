@@ -110,9 +110,15 @@ resolve_permissive_tmux_kill_ref() {
   while IFS= read -r commit; do
     [ -n "$commit" ] || continue
     body=$(git -C "$ROOT" show "$commit:bin/backends/tmux.sh" 2>/dev/null) || continue
+    # Key the already-fixed skip on the anchoring CONTRACT, not on one spelling
+    # of it: the exact-selector call has been written inline as
+    # `-t "=$session:=$window"` and, since the shared helper landed, as
+    # `-t "$anchored"`. Matching only a deleted literal would let a future
+    # rename of that local make this walk return HEAD as the "permissive"
+    # fixture, and the old-vs-new diff would then compare HEAD against itself.
     # shellcheck disable=SC2016
     case "$body" in
-      *'tmux kill-window -t "=$session:=$window"'*) continue ;;
+      *'tmux kill-window -t "=$session:=$window"'*|*fm_backend_tmux_anchor_target*) continue ;;
     esac
     # shellcheck disable=SC2016
     case "$body" in
@@ -532,42 +538,65 @@ test_meta_get_and_backend_of_meta() {
   pass "fm_meta_get / fm_backend_of_meta: read key=value, default backend to tmux"
 }
 
-# A remotely placed secondmate's parent-side meta records `window=remote:<id>`
-# and no `backend=` key, so fm_backend_of_meta defaults it to tmux and it
-# reaches the tmux presence probe. No local tmux command can observe a remote
-# endpoint, so the probe must not run one and must not report the endpoint gone.
-test_target_exists_remote_placement_never_probes_tmux() {
-  local dir fakebin log meta
-  dir=$TMP_ROOT/remote-placement; fakebin="$dir/fakebin"; log="$dir/tmux.log"
+# Whether a worker is remote is decided by the meta's `remote_host`, never by
+# its recorded window string. A remotely placed secondmate records
+# `window=remote:<id>`, but so does an ordinary LOCAL task whose ambient tmux
+# session happens to be named `remote` (fm_backend_tmux_container_ensure returns
+# `#S` verbatim), and that task's windows must still be probed for real.
+test_remote_placement_is_keyed_on_remote_host_not_the_window_string() {
+  local dir remote_meta local_meta
+  dir=$TMP_ROOT/remote-placement; mkdir -p "$dir"
+
+  remote_meta=$dir/ios.meta
+  fm_write_meta "$remote_meta" "window=remote:ios" "remote_host=buildbox" "kind=secondmate"
+  [ "$(fm_backend_of_meta "$remote_meta")" = tmux ] \
+    || fail "the fixture must reproduce the real shape: no backend= key, defaulted to tmux"
+  fm_backend_is_remote_placement "$remote_meta" \
+    || fail "a meta recording remote_host= is a remote placement"
+
+  # Identical window string, no remote_host: a local task in a session named
+  # `remote`. Treating this as remote would report every crashed window in that
+  # session alive - the dead-reads-alive class this primitive exists to catch.
+  local_meta=$dir/local-in-remote-session.meta
+  fm_write_meta "$local_meta" "window=remote:fm-x1" "kind=ship"
+  if fm_backend_is_remote_placement "$local_meta"; then
+    fail "a local task whose session is named 'remote' must not be taken for a remote placement"
+  fi
+
+  pass "fm_backend_is_remote_placement: keyed on remote_host=, not on a remote: window string"
+}
+
+# The shared presence primitive has no placement opinion at all: it probes
+# whatever target it is handed. A local task in a tmux session named `remote`
+# must read dead when its window is gone, exactly like any other local task.
+test_target_exists_probes_a_local_session_named_remote() {
+  local dir fakebin log
+  dir=$TMP_ROOT/session-named-remote; fakebin="$dir/fakebin"; log="$dir/tmux.log"
   mkdir -p "$fakebin"
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
+case "$*" in
+  *'=remote:=fm-live'*) exit 0 ;;
+esac
 exit 1
 SH
   chmod +x "$fakebin/tmux"
+
   : > "$log"
-
-  meta=$dir/ios.meta
-  fm_write_meta "$meta" "window=remote:ios" "remote_host=buildbox" "kind=secondmate"
-  [ "$(fm_backend_of_meta "$meta")" = tmux ] \
-    || fail "the fixture must reproduce the real shape: no backend= key, defaulted to tmux"
-
-  PATH="$fakebin:$PATH" FM_FAKE_TMUX_LOG="$log" \
-    fm_backend_target_exists tmux "$(fm_backend_target_of_meta "$meta")" "fm-ios" \
-    || fail "a remotely placed secondmate's endpoint must not read dead from a local probe"
-  [ ! -s "$log" ] \
-    || fail "a remote: target must never reach tmux"$'\n'"$(cat "$log")"
-
-  # The reserved prefix must not swallow a local endpoint that merely starts
-  # with the same letters, or it would become its own dead-reads-alive hole.
   if PATH="$fakebin:$PATH" FM_FAKE_TMUX_LOG="$log" \
-    fm_backend_target_exists tmux "remotebox:fm-x" "fm-x"; then
-    fail "only the exact remote: placement prefix may bypass the tmux probe"
+    fm_backend_target_exists tmux "remote:fm-dead" "fm-dead"; then
+    fail "a gone window in a local session named 'remote' must read dead"
   fi
-  grep -q 'has-session' "$log" || fail "a local session named remotebox must still be probed"
+  grep -q 'has-session' "$log" \
+    || fail "a remote:-shaped target must still be probed"$'\n'"$(cat "$log")"
 
-  pass "fm_backend_target_exists: a remote: placement is not probed locally and does not read dead"
+  : > "$log"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_LOG="$log" \
+    fm_backend_target_exists tmux "remote:fm-live" "fm-live" \
+    || fail "a live window in a local session named 'remote' must read alive"
+
+  pass "fm_backend_target_exists: a local session named 'remote' is probed, not exempted"
 }
 
 # Pure string contract, so it is asserted directly rather than through a live
@@ -1223,7 +1252,8 @@ test_backend_validate_refuses_unknown
 test_backend_source_shell_portable
 test_backend_validate_spawn_accepts_orca
 test_meta_get_and_backend_of_meta
-test_target_exists_remote_placement_never_probes_tmux
+test_remote_placement_is_keyed_on_remote_host_not_the_window_string
+test_target_exists_probes_a_local_session_named_remote
 test_tmux_anchor_target_shapes
 test_target_exists_refuses_empty_and_malformed_tmux_targets
 test_resolve_selector_three_forms
