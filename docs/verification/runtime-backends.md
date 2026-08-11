@@ -172,6 +172,61 @@ Valid cleanup removed only the exact task-bound target and left the control wind
 The metadata-only validation covers tmux, Herdr, Zellij, Orca, and cmux before backend dispatch.
 Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, and Muse share that backend cleanup boundary; their harness-specific hook files, tokens, and session-log sidecars are cleaned only after it, so no harness needs a separate endpoint parser.
 
+### Endpoint-presence check (fm_backend_target_exists)
+
+Verified on 2026-08-11 with tmux 3.7b on macOS, against an isolated test server on its own explicit socket (never the fleet's own `$TMUX` socket).
+`tmux display-message -p -t <target> '#{pane_id}'` was found to return exit 0 for every target tried: an existing window, a missing window inside a live session (where it also prints the current pane's id and name instead of failing), and a session that does not exist at all.
+`tmux has-session -t <target>` was found to fail correctly on both a missing window and a missing session.
+
+```sh
+tmux -S "$SOCK" new-session -d -s testsess -n testwin 'sleep 600'
+
+# existing window
+tmux -S "$SOCK" display-message -p -t "testsess:testwin" '#{pane_id}'; echo "rc=$?"
+tmux -S "$SOCK" has-session -t "testsess:testwin"; echo "rc=$?"
+
+# missing window inside a live session
+tmux -S "$SOCK" display-message -p -t "testsess:ghostwin" '#{pane_id} #{window_name}'; echo "rc=$?"
+tmux -S "$SOCK" has-session -t "testsess:ghostwin"; echo "rc=$?"
+
+# session that does not exist at all
+tmux -S "$SOCK" display-message -p -t "nosuchsess:nosuchwin" '#{pane_id}'; echo "rc=$?"
+tmux -S "$SOCK" has-session -t "nosuchsess:nosuchwin"; echo "rc=$?"
+```
+
+Observed output:
+
+```text
+=== existing window ===
+display-message: %0
+rc=0
+has-session: rc=0
+
+=== missing window inside a LIVE session ===
+display-message: %0 testwin
+rc=0
+has-session: can't find window: ghostwin
+rc=1
+
+=== session that does not exist at all ===
+display-message: (empty)
+rc=0
+has-session: can't find session: nosuchsess
+rc=1
+```
+
+`fm_backend_target_exists` (`bin/fm-backend.sh`) and `pane_readable` (`bin/fm-crew-state.sh`) both switched their tmux branch from `display-message` to `has-session`.
+`tests/fm-backend-tmux-smoke.test.sh` pins this against a real tmux server: a live window reads alive, a killed window reads dead while its own session stays live, and a wholly nonexistent session reads dead.
+
+Audit of the other backends' `target-exists` branches for the same fall-back-to-current shape, run the same day:
+
+| Backend | Result | Basis |
+| --- | --- | --- |
+| herdr | Not examined live this session; herdr is not installed in this environment. | The target-exists branch calls `pane get <pane>` and reads only the exit status, the same single-query, exit-status-only shape that was wrong for tmux. Existing empirical evidence elsewhere in `bin/backends/herdr.sh` (`fm_backend_herdr_pane_agent_state` header) records that real herdr 0.7.1 exits 1 for `pane get` against a missing pane (error code `pane_not_found`), which argues against the same defect, but this was not independently re-run live in this session. |
+| zellij | Not examined live this session; zellij is not installed in this environment. | The target-exists branch never trusts a raw action exit status against the target: it lists actual pane, session, or tab state via `list-panes --json` / `list-sessions --short` / `list-tabs --json` and filters by exact id or name match in `jq -e`. This repo's own Zellij guarantee table above already records that zellij actions against missing targets return exit 0, which is presumably why the current code was built to avoid trusting that exit status; not independently re-verified live this session. |
+| orca | Not examined live this session; orca is not installed in this environment. | The target-exists branch passes an explicit `--terminal <id>` to `orca terminal read --json` and rejects on the JSON `ok:false` field, not on exit status alone. `tests/fm-backend-orca.test.sh` (`test_target_exists_rejects_orca_error_json`) already exercises that rejection path against a mocked `orca` CLI, but the mock encodes assumed orca behavior rather than a live orca process. |
+| cmux | Not examined live this session; cmux is not installed in this environment. | The target-exists branch lists actual panes via `list-panes --workspace --json` and filters by surface id membership in `jq -e`, the same explicit list-and-filter shape as zellij rather than a single current-fallback query; not independently re-verified live this session. |
+
 ## Composer classification matrix
 
 The shared composer classifier (`bin/fm-composer-lib.sh`, `fm_composer_classify_screen`) owns every composer shape fleet-wide; each backend contributes only a capture and a capability descriptor.

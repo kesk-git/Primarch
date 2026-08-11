@@ -835,7 +835,13 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
   local backend=$1 target=$2 expected_label=${3:-} session pane
   case "$backend" in
     tmux)
-      tmux display-message -p -t "$target" '#{pane_id}' >/dev/null 2>&1
+      # has-session actually fails on a missing window ("can't find window")
+      # or a missing session ("can't find session"). display-message does
+      # not: it silently falls back to the client's current pane and returns
+      # rc=0 for an absent window in a live session, and even for a session
+      # that does not exist at all (verified empirically, tmux 3.7b - see
+      # docs/verification/runtime-backends.md).
+      tmux has-session -t "$target" >/dev/null 2>&1
       ;;
     herdr)
       fm_backend_source herdr || return 1

@@ -149,7 +149,11 @@ BACKEND_TARGET=$(fm_backend_target_of_meta "$META")
 EXPECTED_LABEL="fm-$ID"
 pane_readable() {  # <target>
   case "$TASK_BACKEND" in
-    tmux) tmux display-message -p -t "$1" '#{pane_id}' >/dev/null 2>&1 ;;
+    # has-session actually fails on a missing window or session; display-message
+    # silently falls back to the client's current pane and returns rc=0 even for
+    # a target that does not exist (verified empirically, tmux 3.7b - see
+    # docs/verification/runtime-backends.md).
+    tmux) tmux has-session -t "$1" >/dev/null 2>&1 ;;
     *) fm_backend_capture "$TASK_BACKEND" "$1" 1 "$EXPECTED_LABEL" >/dev/null 2>&1 ;;
   esac
 }

@@ -156,12 +156,36 @@ if fm_backend_tmux_resolve_bare_selector "no-such-window-xyz" 2>/dev/null; then
 fi
 pass "real tmux: fm_backend_tmux_resolve_bare_selector fails for a window that does not exist"
 
+# --- fm_backend_target_exists: alive before kill, dead after ----------------
+# The window under test is presence-checked while it is still live, then again
+# after it is killed but the session itself remains live (window 0 survives) -
+# the exact "missing window inside a live session" shape that a naive
+# tmux display-message read gets wrong (verified empirically, tmux 3.7b:
+# docs/verification/runtime-backends.md).
+
+fm_backend_target_exists tmux "$TARGET" \
+  || fail "fm_backend_target_exists should report the live window alive"
+pass "real tmux: fm_backend_target_exists reports a live window alive"
+
 # --- kill and recovery-grade missing-window classification ------------------
 
 fm_backend_tmux_kill "$TARGET"
 if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$WINDOW"; then
   fail "fm_backend_tmux_kill did not remove the window"
 fi
+
+tmux has-session -t "$SESSION" >/dev/null 2>&1 \
+  || fail "the session itself must still be live after killing only its second window"
+
+if fm_backend_target_exists tmux "$TARGET" 2>/dev/null; then
+  fail "fm_backend_target_exists should report a killed window dead even though its session is still live"
+fi
+pass "real tmux: fm_backend_target_exists reports a killed window dead while its session stays live"
+
+if fm_backend_target_exists tmux "no-such-session-xyz:no-such-window-xyz" 2>/dev/null; then
+  fail "fm_backend_target_exists should report a wholly nonexistent session dead"
+fi
+pass "real tmux: fm_backend_target_exists reports a wholly nonexistent session dead"
 state=$(fm_backend_agent_state tmux "$TARGET")
 [ "$state" = missing ] \
   || fail "a real missing window in a readable session should classify as missing, got '$state'"
