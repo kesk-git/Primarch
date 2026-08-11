@@ -842,7 +842,30 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
       # rc=0 for an absent window in a live session, and even for a session
       # that does not exist at all (verified empirically, tmux 3.7b - see
       # docs/verification/runtime-backends.md).
-      tmux has-session -t "$target" >/dev/null 2>&1
+      #
+      # A session:window target is anchored with tmux's `=` exact-match
+      # prefix on BOTH parts, the same split-and-reject shape
+      # fm_backend_tmux_kill uses (bin/backends/tmux.sh). Unanchored, tmux
+      # resolves each part as exact name, then start-of-name, then glob, so a
+      # dead `firstmate:fm-auth` reads alive off a live sibling window
+      # `fm-auth-fix` - the same dead-reads-alive class this predicate exists
+      # to catch, since window names are `fm-<task-id>` over free-form task
+      # slugs. A target with no ':' is a bare pane id (`%N`, the supervisor
+      # daemon's $TMUX_PANE default) or session name, already exact, and is
+      # passed through unanchored: `=` applies only to names.
+      case "$target" in
+        *:*)
+          session=${target%%:*}
+          pane=${target#*:}
+          case "$session:$pane" in
+            :*|*:|*:*:*) return 1 ;;
+          esac
+          tmux has-session -t "=$session:=$pane" >/dev/null 2>&1
+          ;;
+        *)
+          tmux has-session -t "$target" >/dev/null 2>&1
+          ;;
+      esac
       ;;
     herdr)
       fm_backend_source herdr || return 1

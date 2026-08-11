@@ -289,7 +289,9 @@ SH
 
 # make_fake_tmux <fakebin> <live-target>: has-session succeeds only for
 # the given "session:window" target - the exact primitive
-# fm_backend_target_exists uses for a tmux endpoint liveness read.
+# fm_backend_target_exists uses for a tmux endpoint liveness read. Real tmux's
+# `=` exact-match prefix is stripped off each part before comparing, so the
+# fixture models the same exact-name lookup whether or not the caller anchors.
 make_fake_tmux() {
   local fakebin=$1 live=$2
   cat > "$fakebin/tmux" <<SH
@@ -303,6 +305,8 @@ case "\${1:-}" in
       [ "\$prev" = "-t" ] && target="\$a"
       prev="\$a"
     done
+    target="\${target#=}"
+    target="\${target/:=/:}"
     [ "\$target" = "$live" ] && { printf '%%1\n'; exit 0; }
     exit 1
     ;;

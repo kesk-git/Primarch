@@ -167,6 +167,16 @@ fm_backend_target_exists tmux "$TARGET" \
   || fail "fm_backend_target_exists should report the live window alive"
 pass "real tmux: fm_backend_target_exists reports a live window alive"
 
+# A sibling window whose name strictly EXTENDS the window under test, so the
+# post-kill checks below cover tmux's start-of-name target resolution: an
+# unanchored `smoke:fm-smoke1` lookup resolves to the live `fm-smoke1-sibling`
+# and reads a dead endpoint as alive. Task windows are `fm-<task-id>` over
+# free-form slugs, so this collision is reachable in a real fleet (a crashed
+# `auth` next to a live `auth-fix`).
+SIBLING="$WINDOW-sibling"
+fm_backend_tmux_create_task "$SESSION" "$SIBLING" "$HOME" \
+  || fail "could not create the name-extending sibling window"
+
 # --- kill and recovery-grade missing-window classification ------------------
 
 fm_backend_tmux_kill "$TARGET"
@@ -178,9 +188,18 @@ tmux has-session -t "$SESSION" >/dev/null 2>&1 \
   || fail "the session itself must still be live after killing only its second window"
 
 if fm_backend_target_exists tmux "$TARGET" 2>/dev/null; then
-  fail "fm_backend_target_exists should report a killed window dead even though its session is still live"
+  fail "fm_backend_target_exists should report a killed window dead even though its session is still live and a window whose name extends it ($SIBLING) is live"
 fi
-pass "real tmux: fm_backend_target_exists reports a killed window dead while its session stays live"
+pass "real tmux: fm_backend_target_exists reports a killed window dead while its session and a name-extending sibling stay live"
+
+fm_backend_target_exists tmux "$SESSION:$SIBLING" \
+  || fail "the live name-extending sibling window must still read alive"
+pass "real tmux: fm_backend_target_exists still reports the live name-extending sibling alive"
+
+if fm_backend_target_exists tmux "$SESSION:${WINDOW%1}" 2>/dev/null; then
+  fail "fm_backend_target_exists should report a window name that is only a PREFIX of live windows dead"
+fi
+pass "real tmux: fm_backend_target_exists reports a bare name prefix of live windows dead"
 
 if fm_backend_target_exists tmux "no-such-session-xyz:no-such-window-xyz" 2>/dev/null; then
   fail "fm_backend_target_exists should report a wholly nonexistent session dead"

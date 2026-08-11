@@ -30,6 +30,7 @@ SH
 #!/usr/bin/env bash
 case "${1:-}" in
   display-message) case "$*" in *dead-*) exit 1 ;; *) printf '%%1\n' ;; esac ;;
+  has-session) case "$*" in *dead-*) exit 1 ;; esac ;;
   capture-pane)
     case "$*" in
       *fm-domain-alpha*) printf 'stale terminal summary: Phase 7 started\n> \n' ;;

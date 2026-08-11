@@ -40,6 +40,22 @@ case "${1:-}" in
       exit 1
     fi
     exit 0 ;;
+  has-session)
+    target=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -t) target=$2; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    # Real tmux's `=` exact-match prefix, stripped off each part so the dead
+    # target is recognized whether or not the caller anchors its lookup.
+    target=${target#=}
+    target=${target/:=/:}
+    if [ -n "${FM_FAKE_TMUX_DEAD_TARGET:-}" ] && [ "$target" = "$FM_FAKE_TMUX_DEAD_TARGET" ]; then
+      exit 1
+    fi
+    exit 0 ;;
   display-message)
     target=
     cursor=0

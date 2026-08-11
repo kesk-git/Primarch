@@ -215,8 +215,44 @@ has-session: can't find session: nosuchsess
 rc=1
 ```
 
-`fm_backend_target_exists` (`bin/fm-backend.sh`) and `pane_readable` (`bin/fm-crew-state.sh`) both switched their tmux branch from `display-message` to `has-session`.
-`tests/fm-backend-tmux-smoke.test.sh` pins this against a real tmux server: a live window reads alive, a killed window reads dead while its own session stays live, and a wholly nonexistent session reads dead.
+`has-session` alone is still not sufficient, because tmux resolves each part of a target as exact name, then start-of-name, then glob.
+Verified the same day on the same isolated server: a dead window whose name is a prefix of a live sibling's name reads alive unless the lookup is anchored with tmux's `=` exact-match prefix on both parts.
+This is reachable in a real fleet, since task windows are named `fm-<task-id>` over free-form task slugs: a crashed `auth` next to a live `auth-fix` is exactly this shape.
+
+```sh
+tmux -S "$SOCK" new-session -d -s revsess -n fm-auth-fix 'sleep 300'
+tmux -S "$SOCK" list-windows -t revsess -F '#{window_name}'
+
+tmux -S "$SOCK" has-session -t "revsess:fm-auth"; echo "rc=$?"
+tmux -S "$SOCK" has-session -t "=revsess:=fm-auth"; echo "rc=$?"
+tmux -S "$SOCK" has-session -t "=revsess:=fm-auth-fix"; echo "rc=$?"
+tmux -S "$SOCK" has-session -t '%0'; echo "rc=$?"
+```
+
+Observed output:
+
+```text
+=== windows ===
+fm-auth-fix
+
+=== unanchored dead prefix ===
+rc=0
+
+=== anchored dead prefix ===
+can't find window: fm-auth
+rc=1
+
+=== anchored live exact ===
+rc=0
+
+=== bare pane id, passed through unanchored ===
+rc=0
+```
+
+`fm_backend_target_exists` (`bin/fm-backend.sh`) switched its tmux branch from `display-message` to an anchored `has-session -t "=<session>:=<window>"`, splitting the target on its first `:` and rejecting malformed targets, the same shape `fm_backend_tmux_kill` already uses (`bin/backends/tmux.sh`).
+A target with no `:` is a bare pane id (`%N`, the supervisor daemon's `$TMUX_PANE` default) or a session name, already exact, and is passed through unanchored, since `=` applies only to names.
+`pane_readable` (`bin/fm-crew-state.sh`) delegates its tmux branch to that one primitive rather than re-deriving the probe, so both readers move together.
+`tests/fm-backend-tmux-smoke.test.sh` pins this against a real tmux server: a live window reads alive, a killed window reads dead while its own session and a window whose name extends it stay live, a bare name prefix of live windows reads dead, and a wholly nonexistent session reads dead.
 
 Audit of the other backends' `target-exists` branches for the same fall-back-to-current shape, run the same day:
 
