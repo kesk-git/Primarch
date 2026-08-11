@@ -803,6 +803,18 @@ fm_remote_job_lock_owner_matches_process() {
   FM_REMOTE_JOB_OWNER_PID=$pid
 }
 
+# The worker lock is held by a live process that provably took it and is still
+# running a remote job worker. bin/fm-remote-job-worker.sh stands down to any
+# such owner, so this is exactly the set of processes a replacement worker
+# would defer to.
+fm_remote_job_lock_owner_is_worker() { # <account-home>
+  local account_home=$1 command
+  fm_remote_job_lock_owner_matches_process "$account_home" || return 1
+  command=$(fm_remote_job_process_command "$FM_REMOTE_JOB_OWNER_PID") || return 1
+  case "$command" in *fm-remote-job-worker.sh*) return 0 ;; esac
+  return 1
+}
+
 fm_remote_job_worker_owned_alive() {
   local root=$1 account_home=$2 lock pid pid_file identity_file command ps_bin
   [ "${FM_REMOTE_JOB_ACTIVE:-}" != 1 ] || return 0
@@ -943,6 +955,21 @@ fm_remote_job_start_linux_worker() { # <remote-root> <account-home>
     # The owner pid is the serving child; its restart supervisor sits above it
     # and would immediately replace a lone process kill, so stop the whole
     # worker tree through its isolated group.
+    pid=$FM_REMOTE_JOB_OWNER_PID
+    fm_remote_job_stop_worker_tree "$pid" || {
+      FM_REMOTE_JOB_ERROR="stale remote job worker did not stop safely"
+      return 1
+    }
+    wait "$pid" 2>/dev/null || true
+    FM_REMOTE_JOB_REPAIRED=1
+  elif fm_remote_job_lock_owner_is_worker "$account_home"; then
+    # This owner is not a serving worker for this root - its heartbeat aged
+    # out, or its published worker state no longer matches it - yet it is a
+    # live process still holding worker ownership, and a replacement stands
+    # down to any live lock owner. Leaving it running would deadlock every
+    # later start: no worker would ever serve this root again. Stopping it is
+    # bounded by the same ownership proof used above, so an unrelated process
+    # that merely inherited a recorded pid is never signalled.
     pid=$FM_REMOTE_JOB_OWNER_PID
     fm_remote_job_stop_worker_tree "$pid" || {
       FM_REMOTE_JOB_ERROR="stale remote job worker did not stop safely"

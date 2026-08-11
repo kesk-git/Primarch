@@ -285,6 +285,23 @@ wait "$OTHER_PID" 2>/dev/null || true
 OTHER_PID=
 pass "stale ownership is reclaimed without signaling a reused pid"
 
+# A worker stalled past its heartbeat bound is not a serving worker, but it is
+# still a live lock owner, and a replacement stands down to any live owner. The
+# ensure path therefore has to stop it: leaving it running deadlocks every
+# later start, which reads as a worker that never reports ready.
+STALLED_WORKER_PID=$NEW_WORKER_PID
+kill -STOP "$STALLED_WORKER_PID" || fail "the stalled-worker fixture could not suspend the owner"
+touch -t 200001010000 "$STATE_ROOT/worker.ready"
+fm_remote_job_ensure_worker "$REMOTE_ROOT" "$ACCOUNT_HOME" \
+  || fail "$FM_REMOTE_JOB_ERROR"
+NEW_WORKER_PID=$(cat "$STATE_ROOT/worker.pid")
+[ "$NEW_WORKER_PID" != "$STALLED_WORKER_PID" ] || fail "ensure kept an owner that had stopped heartbeating"
+kill -0 "$STALLED_WORKER_PID" 2>/dev/null && fail "ensure left the stalled owner holding worker ownership"
+fm_remote_job_worker_identity_matches "$REMOTE_ROOT" "$ACCOUNT_HOME" \
+  || fail "the replacement did not start after the stalled owner was stopped"
+fm_remote_job_probe "$ACCOUNT_HOME" || fail "the replacement worker did not become ready"
+pass "a stalled owner is stopped so a replacement worker can serve the root"
+
 FM_REMOTE_JOB_TIMEOUT=1
 fm_remote_job_stage "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" fm-timeout-job.sh < /dev/null > /dev/null
 JOB_ID=$FM_REMOTE_JOB_ID
