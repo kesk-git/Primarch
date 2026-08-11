@@ -895,7 +895,33 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
       # rc=0 for an absent window in a live session, and even for a session
       # that does not exist at all (verified empirically, tmux 3.7b - see
       # docs/verification/runtime-backends.md).
+      #
+      # The window part is matched against the session's real window inventory
+      # FIRST, the same list-and-filter shape the recovery-grade
+      # fm_backend_tmux_agent_state already uses. No tmux target syntax can
+      # name a window whose name contains a literal `.`: tmux splits the window
+      # part on `.` as the pane separator, so both `sess:fm-v1.2-fix` and the
+      # anchored `=sess:=fm-v1.2-fix` fail against a LIVE window of that exact
+      # name. Task ids may contain `.` (fm_backend_endpoint_atom_valid allows
+      # it), so a healthy worker would otherwise read dead here. `grep -Fqx` is
+      # a literal, whole-line match, so it stays exact: a name that is only a
+      # prefix of a live window still misses.
+      #
+      # has-session then remains the fallback, which keeps every shape the
+      # inventory cannot express working: `session:window.pane` targets, and
+      # bare pane ids (`%N`) and window ids (`@N`), which have no session part
+      # at all. The fallback can only turn a miss into a hit when tmux itself
+      # resolves the target, so the anchoring guarantee is unchanged.
       anchored=$(fm_backend_tmux_anchor_target "$target") || return 1
+      case "$target" in
+        *:*)
+          session=${target%%:*}
+          pane=${target#*:}
+          tmux list-windows -t "=$session" -F '#{window_name}
+#{window_index}
+#{window_id}' 2>/dev/null | grep -Fqx "$pane" && return 0
+          ;;
+      esac
       tmux has-session -t "$anchored" >/dev/null 2>&1
       ;;
     herdr)

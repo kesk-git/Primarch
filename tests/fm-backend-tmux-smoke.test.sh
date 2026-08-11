@@ -223,6 +223,44 @@ if fm_backend_target_exists tmux '%999' 2>/dev/null; then
 fi
 pass "real tmux: fm_backend_target_exists reads bare pane-id targets alive and dead correctly"
 
+# A window name containing a literal `.` - reachable through the ordinary spawn
+# path, since task ids may contain dots and the window is named `fm-<task-id>`.
+# tmux splits a target's window part on `.` as the pane separator, so no target
+# syntax can name this window: both `smoke:fm-v1.2-fix` and the anchored
+# `=smoke:=fm-v1.2-fix` fail against it while it is LIVE.
+DOTTED="fm-v1.2-fix"
+fm_backend_tmux_create_task "$SESSION" "$DOTTED" "$HOME" \
+  || fail "could not create the dotted-name window"
+
+fm_backend_target_exists tmux "$SESSION:$DOTTED" \
+  || fail "a LIVE window whose name contains a dot must read alive"
+pass "real tmux: fm_backend_target_exists reports a live dotted window name alive"
+
+# Exactness must survive the dot-safe path: a strict prefix of the dotted name
+# (the part tmux itself would truncate at the dot) must still read dead.
+if fm_backend_target_exists tmux "$SESSION:fm-v1" 2>/dev/null; then
+  fail "a name that is only a PREFIX of the live dotted window must read dead"
+fi
+if fm_backend_target_exists tmux "$SESSION:fm-v1.2" 2>/dev/null; then
+  fail "a dotted name that is only a PREFIX of the live dotted window must read dead"
+fi
+pass "real tmux: a prefix of a live dotted window name still reads dead"
+
+# Removed by window id: no `-t` name syntax can address a dotted window name,
+# which is the whole point of this case (fm_backend_tmux_kill silently no-ops
+# on one - a pre-existing gap in the destructive path, out of scope here).
+dotted_id=$(tmux list-windows -t "=$SESSION" -F '#{window_id} #{window_name}' \
+  | while read -r wid wname; do [ "$wname" = "$DOTTED" ] && printf '%s' "$wid"; done)
+[ -n "$dotted_id" ] || fail "could not resolve the dotted window's id"
+tmux kill-window -t "$dotted_id" 2>/dev/null || true
+if tmux list-windows -t "=$SESSION" -F '#{window_name}' | grep -Fqx "$DOTTED"; then
+  fail "could not remove the dotted-name window to check the dead read"
+fi
+if fm_backend_target_exists tmux "$SESSION:$DOTTED" 2>/dev/null; then
+  fail "a REMOVED window whose name contains a dot must read dead"
+fi
+pass "real tmux: fm_backend_target_exists reports a removed dotted window name dead"
+
 if fm_backend_target_exists tmux "no-such-session-xyz:no-such-window-xyz" 2>/dev/null; then
   fail "fm_backend_target_exists should report a wholly nonexistent session dead"
 fi
