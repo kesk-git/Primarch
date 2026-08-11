@@ -310,6 +310,21 @@ case "\${1:-}" in
     [ "\$target" = "$live" ] && { printf '%%1\n'; exit 0; }
     exit 1
     ;;
+  list-windows)
+    # The presence read resolves session:window by listing the session's real
+    # windows, so this arm answers for the same single live target.
+    target=""
+    prev=""
+    for a in "\$@"; do
+      [ "\$prev" = "-t" ] && target="\$a"
+      prev="\$a"
+    done
+    target="\${target#=}"
+    target="\${target%:}"
+    [ "\$target" = "${live%%:*}" ] || exit 1
+    printf '%s\n' "${live#*:}"
+    exit 0
+    ;;
 esac
 exit 1
 SH

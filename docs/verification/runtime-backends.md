@@ -299,24 +299,41 @@ tmux -S "$SOCK" has-session -t "revsess:fm-v1.2-fix"; echo "rc=$?"
 tmux -S "$SOCK" has-session -t "=revsess:=fm-v1.2-fix"; echo "rc=$?"
 tmux -S "$SOCK" has-session -t "=revsess:=fm-plain"; echo "rc=$?"
 
-tmux -S "$SOCK" list-windows -t "=revsess" -F '#{window_name}' | grep -Fqx "fm-v1.2-fix"; echo "rc=$?"
+tmux -S "$SOCK" has-session -t "=revsess:=fm-v1.0"; echo "rc=$?"
+
+tmux -S "$SOCK" list-windows -t "=my.sess" -F '#{window_name}'; echo "rc=$?"
+tmux -S "$SOCK" list-windows -t "=my.sess:" -F '#{window_name}'; echo "rc=$?"
+tmux -S "$SOCK" has-session -t "=my.sess"; echo "rc=$?"
+tmux -S "$SOCK" has-session -t "=my.sess:"; echo "rc=$?"
 ```
 
-Observed output:
+Observed output, with `revsess` holding live windows `fm-v1` (pane 0) and `fm-v1.2-fix`, and a second session `my.sess` holding a live `fm-v2.1-fix`:
 
 ```text
-unanchored dotted window     can't find pane: 2-fix
-                             rc=1
-anchored dotted window       can't find window: fm-v1
-                             rc=1
-anchored dot-free control    rc=0
-inventory match, dotted      rc=0
+unanchored dotted window        can't find pane: 2-fix
+                                rc=1
+anchored dotted window          can't find window: fm-v1
+                                rc=1
+anchored dot-free control       rc=0
+anchored <live-window>.<pane>   rc=0     <- NO window of that name exists
+list-windows -t "=my.sess"      can't find pane: sess
+                                rc=1
+list-windows -t "=my.sess:"     fm-v2.1-fix
+                                rc=0
+has-session -t "=my.sess"       can't find pane: sess
+                                rc=1
+has-session -t "=my.sess:"      rc=0
 ```
 
-`fm_backend_target_exists` therefore matches the window part against the session's real window inventory first - `list-windows -t "=<session>"` emitting `#{window_name}`, `#{window_index}`, and `#{window_id}`, filtered with `grep -Fqx` - the same list-real-state-and-filter shape the recovery-grade `fm_backend_tmux_agent_state` already uses and that this table records for the zellij and cmux arms.
-`grep -Fqx` is a literal whole-line match, so exactness is preserved: measured on the same server, `fm-v1` and `fm-v1.2` both miss while `fm-v1.2-fix` hits, and a prefix session part (`=revse`) fails the `list-windows` call outright.
-Window indexes and window ids are matched by the same inventory pass (`0` and `@0` both hit), so the supervisor's `firstmate:0` default is unaffected.
-An anchored `has-session` remains the fallback for the shapes an inventory cannot express - `session:window.pane` targets, and bare pane ids (`%N`) and window ids (`@N`), which have no session part - and it can only turn a miss into a hit when tmux itself resolves the target, so it never widens what reads alive.
+The ambiguity runs in both directions and applies to the session part as well as the window part, so `fm_backend_target_exists` never hands tmux a composed `session:window` name string at all.
+It resolves the two parts separately against real state: the session part anchored AND suffixed with `:` so tmux parses it as a session (`list-windows -t "=<session>:"`), then the window part as a literal whole-line `grep -Fqx` over that session's `#{window_name}`, `#{window_index}`, and `#{window_id}` - the same list-real-state-and-filter shape the recovery-grade `fm_backend_tmux_agent_state` uses and that this table records for the zellij and cmux arms.
+Exactness is preserved in every part: measured on the same server, `fm-v1` and `fm-v1.2` miss while `fm-v1.2-fix` hits, a prefix session part fails the `list-windows` call outright, and window indexes and ids still hit (`0` and `@0`), so the supervisor's `firstmate:0` default is unaffected.
+A bare session-name target takes the same trailing-colon form (`has-session -t "=<name>:"`), which is exact and dot-safe: `=my.sess:` succeeds while `=my:` and `=nosuch.x:` both fail.
+Bare pane ids (`%N`) and window ids (`@N`) are already exact and unambiguous, so they stay on a plain `has-session`; anchoring them makes them fail.
+
+`session:window.pane` is deliberately NOT a shape this predicate resolves.
+It cannot be, because a window may legitimately be named `window.pane`: with a live `fm-v1` and no window named `fm-v1.0`, the string `fm-v1.0` is either an absent window or the live window's pane 0, and nothing distinguishes them.
+Every target this fleet records is a window identity (`$SES:fm-<task-id>`), so the window-name reading is the correct one, and taking it is what makes a genuinely gone `fm-v1.0` read dead instead of alive off its live sibling.
 Both calls are read-only: against a socket path with no server, `list-windows` prints `error connecting` and creates no socket.
 `fm_backend_target_exists` (`bin/fm-backend.sh`) switched its tmux branch from `display-message` to `has-session` against that anchored target.
 The primitive holds no opinion about placement: it probes whatever target it is handed.

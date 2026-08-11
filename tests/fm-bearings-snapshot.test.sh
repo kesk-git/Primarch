@@ -31,6 +31,31 @@ SH
 case "${1:-}" in
   display-message) case "$*" in *dead-*) exit 1 ;; *) printf '%%1\n' ;; esac ;;
   has-session) case "$*" in *dead-*) exit 1 ;; esac ;;
+  list-windows)
+    # The endpoint-presence read lists a session's real windows instead of
+    # naming one target, so answer from the recorded metas and apply the same
+    # *dead-* exclusion the display-message arm uses to simulate a gone window.
+    want=
+    prev=
+    for a in "$@"; do
+      [ "$prev" = "-t" ] && want=$a
+      prev=$a
+    done
+    want=${want#=}
+    want=${want%:}
+    for m in "${FM_HOME:-/nonexistent}"/state/*.meta; do
+      [ -f "$m" ] || continue
+      w=$(grep '^window=' "$m" 2>/dev/null | tail -1 | cut -d= -f2-)
+      case "$w" in
+        "$want":*) ;;
+        *) continue ;;
+      esac
+      case "${w#*:}" in
+        *dead-*) continue ;;
+      esac
+      printf '%s\n' "${w#*:}"
+    done
+    exit 0 ;;
   capture-pane)
     case "$*" in
       *fm-domain-alpha*) printf 'stale terminal summary: Phase 7 started\n> \n' ;;

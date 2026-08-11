@@ -89,6 +89,28 @@ case "${1:-}" in
   has-session)
     [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 1
     ;;
+  list-windows)
+    # The endpoint-presence read resolves a session:window target by listing the
+    # session's real windows, so the fixture answers from the recorded metas -
+    # the same records that describe which windows were created - gated by the
+    # same FM_FAKE_TMUX_MISSING toggle as every other liveness arm here.
+    [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 1
+    _want=
+    _prev=
+    for _a in "$@"; do
+      [ "$_prev" = "-t" ] && _want=$_a
+      _prev=$_a
+    done
+    _want=${_want#=}
+    _want=${_want%:}
+    for _m in "${FM_STATE_OVERRIDE:-/nonexistent}"/*.meta; do
+      [ -f "$_m" ] || continue
+      _w=$(grep '^window=' "$_m" 2>/dev/null | tail -1 | cut -d= -f2-)
+      case "$_w" in
+        "$_want":*) printf '%s\n' "${_w#*:}" ;;
+      esac
+    done
+    exit 0 ;;
   capture-pane)
     [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 1
     if [ "${FM_FAKE_BUSY:-0}" = 1 ]; then printf 'work in progress\n%s\n' "${FM_FAKE_BUSY_TEXT:-esc to interrupt}"

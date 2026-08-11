@@ -133,7 +133,18 @@ case "${1:-}" in
     [ "$_print" = 1 ] && printf 'fakepane\n'
     exit 0 ;;
   list-windows)
-    [ -n "${FM_FAKE_TMUX_WINDOW:-}" ] && printf '%s\n' "$FM_FAKE_TMUX_WINDOW"
+    # `-a` is the fleet-wide "session:window" listing the bare-selector resolver
+    # reads. Without it this is the endpoint-presence read listing ONE session's
+    # windows, which must answer with the supervisor target's own window part
+    # (`firstmate:0`, an index) under the same liveness gate as display-message.
+    case " $* " in
+      *" -a "*)
+        [ -n "${FM_FAKE_TMUX_WINDOW:-}" ] && printf '%s\n' "$FM_FAKE_TMUX_WINDOW"
+        exit 0 ;;
+    esac
+    [ "${FM_FAKE_TMUX_PANE_ALIVE:-1}" = "1" ] || exit 1
+    [ -n "${FM_FAKE_TMUX_WINDOW:-}" ] && printf '%s\n' "${FM_FAKE_TMUX_WINDOW#*:}"
+    printf '0\n@0\n'
     exit 0 ;;
   capture-pane)
     # Honor a single-line band capture (-S N -E M, both non-negative) for the
@@ -222,7 +233,15 @@ case "${1:-}" in
     [ "$print" = 1 ] && printf 'fakepane\n'
     exit 0 ;;
   capture-pane) cat "$COMPOSER" 2>/dev/null; exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows)
+    # Mirrors this fixture's unconditionally-live has-session arm: the presence
+    # read resolves a session:window target from this listing, so it names the
+    # window parts this fixture's callers target (`sess:win`, `firstmate:0`).
+    case " $* " in
+      *" -a "*) exit 0 ;;
+    esac
+    printf '%s\n0\n@0\n' "${FM_FAKE_TMUX_WINDOW_NAME:-win}"
+    exit 0 ;;
   send-keys)
     shift
     text=""; is_enter=0; lit=0

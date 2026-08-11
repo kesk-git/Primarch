@@ -573,11 +573,16 @@ test_target_exists_probes_a_local_session_named_remote() {
   local dir fakebin log
   dir=$TMP_ROOT/session-named-remote; fakebin="$dir/fakebin"; log="$dir/tmux.log"
   mkdir -p "$fakebin"
+  # A live session named `remote` holding exactly one window, `fm-live`.
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
-case "$*" in
-  *'=remote:=fm-live'*) exit 0 ;;
+case "${1:-}" in
+  list-windows)
+    case "$*" in
+      *'=remote:'*) printf 'fm-live\n0\n@0\n'; exit 0 ;;
+    esac
+    exit 1 ;;
 esac
 exit 1
 SH
@@ -588,7 +593,7 @@ SH
     fm_backend_target_exists tmux "remote:fm-dead" "fm-dead"; then
     fail "a gone window in a local session named 'remote' must read dead"
   fi
-  grep -q 'has-session' "$log" \
+  grep -q 'list-windows' "$log" \
     || fail "a remote:-shaped target must still be probed"$'\n'"$(cat "$log")"
 
   : > "$log"
@@ -773,7 +778,11 @@ case "${1:-}" in
       printf '╭────╮\n│    │\n╰────╯\n'
     fi
     exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows)
+    # The endpoint-presence read resolves this fixture's `sess:win` target by
+    # listing the session's windows, so name that window part here.
+    printf 'win\n0\n@0\n'
+    exit 0 ;;
 esac
 exit 0
 SH

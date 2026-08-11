@@ -889,40 +889,52 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
   local backend=$1 target=$2 expected_label=${3:-} session pane anchored
   case "$backend" in
     tmux)
-      # has-session actually fails on a missing window ("can't find window")
-      # or a missing session ("can't find session"). display-message does
-      # not: it silently falls back to the client's current pane and returns
-      # rc=0 for an absent window in a live session, and even for a session
-      # that does not exist at all (verified empirically, tmux 3.7b - see
-      # docs/verification/runtime-backends.md).
+      # display-message is unusable here: it silently falls back to the
+      # client's current pane and returns rc=0 for an absent window in a live
+      # session, and even for a session that does not exist at all (verified
+      # empirically, tmux 3.7b - see docs/verification/runtime-backends.md).
       #
-      # The window part is matched against the session's real window inventory
-      # FIRST, the same list-and-filter shape the recovery-grade
-      # fm_backend_tmux_agent_state already uses. No tmux target syntax can
-      # name a window whose name contains a literal `.`: tmux splits the window
-      # part on `.` as the pane separator, so both `sess:fm-v1.2-fix` and the
-      # anchored `=sess:=fm-v1.2-fix` fail against a LIVE window of that exact
-      # name. Task ids may contain `.` (fm_backend_endpoint_atom_valid allows
-      # it), so a healthy worker would otherwise read dead here. `grep -Fqx` is
-      # a literal, whole-line match, so it stays exact: a name that is only a
-      # prefix of a live window still misses.
+      # A composed `session:window` NAME string is never handed to tmux to
+      # resolve, because tmux's target parser reads a literal `.` as the pane
+      # separator and that makes such a string ambiguous in both directions:
+      #   - `=sess:=fm-v1.2-fix` fails against a LIVE window of exactly that
+      #     name (parsed as window `fm-v1`, pane `2-fix`), and
+      #   - `=sess:=fm-v1.0` SUCCEEDS with no window of that name at all, by
+      #     resolving to a different live window `fm-v1`, pane 0.
+      # Task ids may contain `.` (fm_backend_endpoint_atom_valid allows it) and
+      # a task's window is named `fm-<task-id>`, so both directions are
+      # reachable from an ordinary spawn.
       #
-      # has-session then remains the fallback, which keeps every shape the
-      # inventory cannot express working: `session:window.pane` targets, and
-      # bare pane ids (`%N`) and window ids (`@N`), which have no session part
-      # at all. The fallback can only turn a miss into a hit when tmux itself
-      # resolves the target, so the anchoring guarantee is unchanged.
+      # Instead the parts are resolved separately against real state, the same
+      # list-and-filter shape the recovery-grade fm_backend_tmux_agent_state
+      # uses. The session part is anchored AND given a trailing `:` so tmux
+      # parses it as a session rather than a window target - without the colon,
+      # a session name containing a `.` fails the same way ("can't find pane").
+      # The window part is then a literal whole-line `grep -Fqx` against that
+      # session's real windows, matched by name, index, or window id.
+      #
+      # Consequence, deliberate: `session:window.pane` is not a shape this
+      # predicate resolves. It cannot be, while a window may legitimately be
+      # NAMED `window.pane` - and every target recorded by this fleet is a
+      # window identity (`$SES:fm-<task-id>`), never a pane suffix. Bare pane
+      # ids (`%N`) and window ids (`@N`) are already exact and unambiguous, so
+      # they stay on has-session; anchoring them would break them.
       anchored=$(fm_backend_tmux_anchor_target "$target") || return 1
       case "$target" in
+        %*|@*)
+          tmux has-session -t "$anchored" >/dev/null 2>&1
+          ;;
         *:*)
           session=${target%%:*}
           pane=${target#*:}
-          tmux list-windows -t "=$session" -F '#{window_name}
+          tmux list-windows -t "=$session:" -F '#{window_name}
 #{window_index}
-#{window_id}' 2>/dev/null | grep -Fqx "$pane" && return 0
+#{window_id}' 2>/dev/null | grep -Fqx "$pane"
+          ;;
+        *)
+          tmux has-session -t "=$target:" >/dev/null 2>&1
           ;;
       esac
-      tmux has-session -t "$anchored" >/dev/null 2>&1
       ;;
     herdr)
       fm_backend_source herdr || return 1
