@@ -18,6 +18,13 @@ FAKE_PERL_LOG="$TMP_ROOT/perl.log"
 REAL_GIT=$(command -v git)
 OTHER_PID=
 RECOVERY_WORKER_PID=
+LINUX_FAIL_STATE=
+LINUX_FAIL_HOLDER_PID=
+LINUX_WAIT_STATE=
+LINUX_WAIT_HOLDER_PID=
+LINUX_WAIT_RELEASE_PID=
+LEFTOVER_STATE=
+CREATED_LOCK_PID=
 mkdir -p "$REMOTE_ROOT/bin" "$REMOTE_HOME" "$ACCOUNT_HOME" "$RUNTIME_BIN"
 # worker.pid records the serving child, not its restart supervisor, so stopping
 # that pid alone leaves the supervisor to respawn - the leak
@@ -25,9 +32,16 @@ mkdir -p "$REMOTE_ROOT/bin" "$REMOTE_HOME" "$ACCOUNT_HOME" "$RUNTIME_BIN"
 cleanup_remote_job_fixture() {
   [ -z "$OTHER_PID" ] || kill "$OTHER_PID" 2>/dev/null || true
   [ -z "$RECOVERY_WORKER_PID" ] || kill "$RECOVERY_WORKER_PID" 2>/dev/null || true
+  [ -z "$LINUX_WAIT_RELEASE_PID" ] || kill "$LINUX_WAIT_RELEASE_PID" 2>/dev/null || true
+  [ -z "$LINUX_WAIT_HOLDER_PID" ] || kill "$LINUX_WAIT_HOLDER_PID" 2>/dev/null || true
+  [ -z "$LINUX_FAIL_HOLDER_PID" ] || kill "$LINUX_FAIL_HOLDER_PID" 2>/dev/null || true
   if [ -f "$STATE_ROOT/worker.pid" ]; then
     fm_remote_job_stop_worker_tree "$(cat "$STATE_ROOT/worker.pid")" || true
   fi
+  for linux_wait_state in "$LINUX_FAIL_STATE" "$LINUX_WAIT_STATE" "$LEFTOVER_STATE"; do
+    [ -n "$linux_wait_state" ] && [ -f "$linux_wait_state/worker.pid" ] || continue
+    fm_remote_job_stop_worker_tree "$(cat "$linux_wait_state/worker.pid")" || true
+  done
   rm -rf -- "$TMP_ROOT"
 }
 trap cleanup_remote_job_fixture EXIT
@@ -619,5 +633,147 @@ kill -TERM "$RECOVERY_WORKER_PID"
 wait "$RECOVERY_WORKER_PID" 2>/dev/null || true
 RECOVERY_WORKER_PID=
 pass "quarantine clears only after recorded execution has stopped"
+
+# --- bounded wait for a Linux worker replacement racing a prior lock holder --
+#
+# A replaced Linux supervisor can lose its first ownership race while a prior
+# supervisor is still releasing the shared worker.lock directory. The old code
+# retried the idempotent start exactly once - about a 40-second total budget
+# across the unconditional readiness probe plus one retry - so a release that
+# took longer than that was reported as a startup failure even though the
+# worker would have come up fine given more time. Both cases below stand a
+# real, verifiable process in for that prior supervisor and record it as the
+# worker.lock owner: the first holds the lock for the whole
+# fm_remote_job_ensure_worker call, unconditionally outlasting its 15-second
+# bound, and the second releases it after 45 seconds - past that old budget,
+# inside its 60-second bound. Each case gets its own state root so a worker
+# still winding down from one can never reach the other's lock, and neither
+# result depends on how fast a real worker happens to start on a given
+# machine.
+#
+# create_worker_lock <state-root>: mkdir a worker.lock recording a real
+# process, left running, as its owner, so the lock reads as genuinely held to
+# fm_remote_job_lock_owner_matches_process. The plain, non-`-p` mkdir fails
+# loudly if a lock is already there, so a real worker that beat the fixture to
+# the state root can never be mistaken for the fixture's own hold. The owner
+# pid is published in CREATED_LOCK_PID for the caller to release and reap.
+create_worker_lock() { # <state-root>
+  local state=$1 start command
+  mkdir "$state/worker.lock" || fail "a worker lock already held $state before the fixture could take it"
+  chmod 700 "$state/worker.lock"
+  sleep 300 &
+  CREATED_LOCK_PID=$!
+  start=$(fm_remote_job_process_start "$CREATED_LOCK_PID") || fail "the lock fixture process could not be inspected"
+  command=$(fm_remote_job_process_command "$CREATED_LOCK_PID") || fail "the lock fixture process could not be inspected"
+  printf '%s\n' "$CREATED_LOCK_PID" > "$state/worker.lock/pid"
+  printf '%s\n' "$start" > "$state/worker.lock/start"
+  printf '%s\n' "$command" > "$state/worker.lock/command"
+  chmod 600 "$state/worker.lock"/*
+  touch -t 200001010000 "$state/worker.lock"
+}
+
+# release_worker_lock <state-root> <owner-pid> <hold-seconds>: run in the
+# background to hand the lock over after <hold-seconds>. The lock goes first so
+# a replacement never sees it standing with a dead owner; the owner process is
+# then stopped and left for the shell that spawned it to reap.
+release_worker_lock() {
+  local state=$1 owner=$2 hold=$3
+  sleep "$hold"
+  rm -rf -- "$state/worker.lock"
+  kill "$owner" 2>/dev/null || true
+}
+
+LINUX_FAIL_HOME="$TMP_ROOT/linux-fail-account"
+LINUX_FAIL_STATE="$TMP_ROOT/linux-fail-jobs"
+mkdir -p "$LINUX_FAIL_HOME" "$LINUX_FAIL_STATE/jobs" "$LINUX_FAIL_STATE/logs"
+chmod 700 "$LINUX_FAIL_HOME" "$LINUX_FAIL_STATE"
+FM_REMOTE_JOB_STATE_ROOT="$LINUX_FAIL_STATE"
+FM_REMOTE_JOB_LINUX_STARTUP_WAIT_SECONDS=15
+create_worker_lock "$LINUX_FAIL_STATE"
+LINUX_FAIL_HOLDER_PID=$CREATED_LOCK_PID
+set +e
+fm_remote_job_ensure_worker "$REMOTE_ROOT" "$LINUX_FAIL_HOME"
+FAIL_RC=$?
+set -e
+FAIL_ERROR=$FM_REMOTE_JOB_ERROR
+rm -rf -- "$LINUX_FAIL_STATE/worker.lock"
+kill "$LINUX_FAIL_HOLDER_PID" 2>/dev/null || true
+wait "$LINUX_FAIL_HOLDER_PID" 2>/dev/null || true
+LINUX_FAIL_HOLDER_PID=
+[ "$FAIL_RC" -ne 0 ] || fail "a 15-second startup bound succeeded against a lock held for the whole call"
+assert_contains "$FAIL_ERROR" "worker lock is still held" \
+  "the timeout error did not describe what was still holding the worker lock"
+pass "a Linux worker replacement bounded below the actual release delay fails, not hangs"
+
+LINUX_WAIT_HOME="$TMP_ROOT/linux-wait-account"
+LINUX_WAIT_STATE="$TMP_ROOT/linux-wait-jobs"
+mkdir -p "$LINUX_WAIT_HOME" "$LINUX_WAIT_STATE/jobs" "$LINUX_WAIT_STATE/logs"
+chmod 700 "$LINUX_WAIT_HOME" "$LINUX_WAIT_STATE"
+FM_REMOTE_JOB_STATE_ROOT="$LINUX_WAIT_STATE"
+FM_REMOTE_JOB_LINUX_STARTUP_WAIT_SECONDS=60
+create_worker_lock "$LINUX_WAIT_STATE"
+LINUX_WAIT_HOLDER_PID=$CREATED_LOCK_PID
+release_worker_lock "$LINUX_WAIT_STATE" "$LINUX_WAIT_HOLDER_PID" 45 &
+LINUX_WAIT_RELEASE_PID=$!
+fm_remote_job_ensure_worker "$REMOTE_ROOT" "$LINUX_WAIT_HOME" || fail "$FM_REMOTE_JOB_ERROR"
+wait "$LINUX_WAIT_RELEASE_PID" 2>/dev/null || true
+LINUX_WAIT_RELEASE_PID=
+wait "$LINUX_WAIT_HOLDER_PID" 2>/dev/null || true
+LINUX_WAIT_HOLDER_PID=
+assert_present "$LINUX_WAIT_STATE/worker.ready" "the replacement worker did not publish readiness after the prior lock released"
+fm_remote_job_worker_identity_matches "$REMOTE_ROOT" "$LINUX_WAIT_HOME" \
+  || fail "the replacement worker did not publish the current code identity"
+pass "a Linux worker replacement waits past the old one-retry budget and succeeds once the prior lock releases"
+
+# --- reclaiming a lock a killed publish left staged files inside -------------
+#
+# Ownership files are not all a lost owner can leave in worker.lock. A worker
+# killed between staging its ownership files and renaming them - the shape the
+# replacement path's TERM-then-KILL escalation produces - leaves a staged
+# temporary behind. Reclaiming an abandoned lock removed only pid, start, and
+# command, so the directory could never be removed: every later worker failed
+# to acquire ownership, no worker could ever report ready again for that
+# account, and no startup bound could help, because waiting is not what the
+# state needed. This stands that leftover in deterministically - the recorded
+# owner is a process that has already exited and been reaped, and the lock
+# carries an old mtime, so the lock is unambiguously abandoned rather than
+# merely quiet - and requires ensure to converge anyway.
+LEFTOVER_HOME="$TMP_ROOT/leftover-account"
+LEFTOVER_STATE="$TMP_ROOT/leftover-jobs"
+mkdir -p "$LEFTOVER_HOME" "$LEFTOVER_STATE/jobs" "$LEFTOVER_STATE/logs"
+chmod 700 "$LEFTOVER_HOME" "$LEFTOVER_STATE"
+FM_REMOTE_JOB_STATE_ROOT="$LEFTOVER_STATE"
+FM_REMOTE_JOB_LINUX_STARTUP_WAIT_SECONDS=30
+sleep 300 &
+ABANDONED_PID=$!
+ABANDONED_START=$(fm_remote_job_process_start "$ABANDONED_PID") \
+  || fail "the abandoned-lock fixture process could not be inspected"
+ABANDONED_COMMAND=$(fm_remote_job_process_command "$ABANDONED_PID") \
+  || fail "the abandoned-lock fixture process could not be inspected"
+# Killed and reaped here, so the recorded owner is gone before the lock is
+# staged rather than racing the process's own exit.
+kill "$ABANDONED_PID" 2>/dev/null || true
+wait "$ABANDONED_PID" 2>/dev/null || true
+mkdir "$LEFTOVER_STATE/worker.lock" || fail "a worker lock already held $LEFTOVER_STATE before the fixture could take it"
+chmod 700 "$LEFTOVER_STATE/worker.lock"
+printf '%s\n' "$ABANDONED_PID" > "$LEFTOVER_STATE/worker.lock/pid"
+printf '%s\n' "$ABANDONED_START" > "$LEFTOVER_STATE/worker.lock/start"
+printf '%s\n' "$ABANDONED_COMMAND" > "$LEFTOVER_STATE/worker.lock/command"
+LEFTOVER_STAGED="$LEFTOVER_STATE/worker.lock/.pid.9Xq4Tz"
+printf '%s\n' "$ABANDONED_PID" > "$LEFTOVER_STAGED"
+chmod 600 "$LEFTOVER_STATE/worker.lock"/pid "$LEFTOVER_STATE/worker.lock"/start \
+  "$LEFTOVER_STATE/worker.lock"/command "$LEFTOVER_STAGED"
+touch -t 200001010000 "$LEFTOVER_STATE/worker.lock"
+fm_remote_job_ensure_worker "$REMOTE_ROOT" "$LEFTOVER_HOME" || fail "$FM_REMOTE_JOB_ERROR"
+assert_present "$LEFTOVER_STATE/worker.ready" "no worker reported ready after the abandoned lock was reclaimed"
+assert_absent "$LEFTOVER_STAGED" "reclaiming the abandoned lock kept the staged file that blocked its removal"
+fm_remote_job_worker_identity_matches "$REMOTE_ROOT" "$LEFTOVER_HOME" \
+  || fail "the replacement worker did not publish the current code identity"
+fm_remote_job_lock_owner_matches_process "$LEFTOVER_HOME" \
+  || fail "the reclaimed lock does not record the live replacement worker as its owner"
+pass "an abandoned worker lock is reclaimed even when a killed publish left a staged file inside it"
+
+FM_REMOTE_JOB_STATE_ROOT="$STATE_ROOT"
+FM_REMOTE_JOB_LINUX_STARTUP_WAIT_SECONDS=90
 
 echo "ALL TESTS PASSED"

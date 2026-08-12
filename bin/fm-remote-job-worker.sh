@@ -143,6 +143,24 @@ worker_recover_quarantine() { # <account-home>
   rm -f -- "$WORKER_LOCK/quarantine"
 }
 
+# Clear every entry of a lock directory the caller has already proven
+# abandoned. Ownership is not the only thing a lost owner leaves here: a worker
+# killed between staging its ownership files and renaming them - the shape the
+# replacement path's TERM-then-KILL escalation produces - leaves a staged
+# temporary file behind, and removing only pid, start, and command would leave
+# a directory that can never be removed, wedging every later worker on this
+# account for good. Refuses anything that is not a plain regular file, so a
+# reclaim can never follow a planted link or delete a tree.
+worker_clear_abandoned_lock() {
+  local entry
+  for entry in "$WORKER_LOCK"/* "$WORKER_LOCK"/.*; do
+    case "${entry##*/}" in .|..) continue ;; esac
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    [ ! -L "$entry" ] && [ -f "$entry" ] || return 1
+    rm -f -- "$entry" || return 1
+  done
+}
+
 worker_acquire_lock() {
   local account_home=$1 attempt=0
   while [ "$attempt" -lt 150 ]; do
@@ -162,8 +180,7 @@ worker_acquire_lock() {
       sleep 0.1
       continue
     fi
-    [ ! -L "$WORKER_LOCK/pid" ] && [ ! -L "$WORKER_LOCK/start" ] && [ ! -L "$WORKER_LOCK/command" ] || return 1
-    rm -f -- "$WORKER_LOCK/pid" "$WORKER_LOCK/start" "$WORKER_LOCK/command" || return 1
+    worker_clear_abandoned_lock || return 1
     rmdir "$WORKER_LOCK" || return 1
   done
   return 1
