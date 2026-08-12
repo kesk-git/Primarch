@@ -163,15 +163,26 @@ case ":$FM_REMOTE_JOB_OPERATOR_PATH:" in
 esac
 pass "operator PATH resolves the authorized Nix profile bin link"
 
+# Job control puts this worker tree in its own process group, exactly as the
+# library's own Linux start path does. Without it the supervisor shares this
+# script's group, fm_remote_job_worker_process_group refuses to signal a group
+# that is also the caller's, and every later replacement stops the serving
+# child alone - leaving this supervisor to respawn a child still bound to the
+# superseded code root, which then wins the ownership lock and keeps the
+# replacement worker from ever publishing the identity ensure waits for.
+set -m
 HOME="$ACCOUNT_HOME" PATH="$RUNTIME_BIN:/usr/bin:/bin:/usr/sbin:/sbin" FM_FAKE_PERL_LOG="$FAKE_PERL_LOG" \
   FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$STATE_ROOT" \
   FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux FM_REMOTE_JOB_TIMEOUT=5 \
   "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" > "$TMP_ROOT/worker.out" 2> "$TMP_ROOT/worker.err" &
+set +m
 for _ in $(seq 1 100); do
   [ -f "$STATE_ROOT/worker.ready" ] && break
   sleep 0.05
 done
 assert_present "$STATE_ROOT/worker.ready" "the worker did not publish its readiness heartbeat"
+fm_remote_job_worker_process_group "$(cat "$STATE_ROOT/worker.pid")" > /dev/null \
+  || fail "the fixture worker tree is not stoppable as a group"
 
 file_mode() {
   if [ "$(uname)" = Darwin ]; then
