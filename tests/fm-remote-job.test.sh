@@ -18,6 +18,8 @@ FAKE_PERL_LOG="$TMP_ROOT/perl.log"
 REAL_GIT=$(command -v git)
 OTHER_PID=
 RECOVERY_WORKER_PID=
+LINUX_WAIT_STATE=
+LINUX_WAIT_HOLDER_PID=
 mkdir -p "$REMOTE_ROOT/bin" "$REMOTE_HOME" "$ACCOUNT_HOME" "$RUNTIME_BIN"
 # worker.pid records the serving child, not its restart supervisor, so stopping
 # that pid alone leaves the supervisor to respawn - the leak
@@ -25,8 +27,12 @@ mkdir -p "$REMOTE_ROOT/bin" "$REMOTE_HOME" "$ACCOUNT_HOME" "$RUNTIME_BIN"
 cleanup_remote_job_fixture() {
   [ -z "$OTHER_PID" ] || kill "$OTHER_PID" 2>/dev/null || true
   [ -z "$RECOVERY_WORKER_PID" ] || kill "$RECOVERY_WORKER_PID" 2>/dev/null || true
+  [ -z "$LINUX_WAIT_HOLDER_PID" ] || kill "$LINUX_WAIT_HOLDER_PID" 2>/dev/null || true
   if [ -f "$STATE_ROOT/worker.pid" ]; then
     fm_remote_job_stop_worker_tree "$(cat "$STATE_ROOT/worker.pid")" || true
+  fi
+  if [ -n "$LINUX_WAIT_STATE" ] && [ -f "$LINUX_WAIT_STATE/worker.pid" ]; then
+    fm_remote_job_stop_worker_tree "$(cat "$LINUX_WAIT_STATE/worker.pid")" || true
   fi
   rm -rf -- "$TMP_ROOT"
 }
@@ -619,5 +625,85 @@ kill -TERM "$RECOVERY_WORKER_PID"
 wait "$RECOVERY_WORKER_PID" 2>/dev/null || true
 RECOVERY_WORKER_PID=
 pass "quarantine clears only after recorded execution has stopped"
+
+# --- bounded wait for a Linux worker replacement racing a prior lock holder --
+#
+# A replaced Linux supervisor can lose its first ownership race while a prior
+# supervisor is still releasing the shared worker.lock directory. The old code
+# retried the idempotent start exactly once - about a 40-second total budget
+# across the unconditional readiness probe plus one retry - so a release that
+# took longer than that was reported as a startup failure even though the
+# worker would have come up fine given more time. Both cases below hold the
+# lock with a real, verifiable process standing in for the prior supervisor,
+# for 45 seconds - past that old budget - so neither result depends on how
+# fast a real worker happens to start on a given machine.
+LINUX_WAIT_HOME="$TMP_ROOT/linux-wait-account"
+LINUX_WAIT_STATE="$TMP_ROOT/linux-wait-jobs"
+mkdir -p "$LINUX_WAIT_HOME" "$LINUX_WAIT_STATE/jobs" "$LINUX_WAIT_STATE/logs"
+chmod 700 "$LINUX_WAIT_HOME" "$LINUX_WAIT_STATE"
+
+# hold_worker_lock <state-root> <hold-seconds>: mkdir a worker.lock recording a
+# real background process as its owner, wait <hold-seconds>, then release by
+# reaping that process and removing the lock - all within this one subshell,
+# so the reap is unambiguous rather than depending on how `ps` renders a
+# zombie left behind by a different shell.
+hold_worker_lock() {
+  local state=$1 hold=$2 fixture_pid start command
+  sleep 300 &
+  fixture_pid=$!
+  start=$(fm_remote_job_process_start "$fixture_pid") || return 1
+  command=$(fm_remote_job_process_command "$fixture_pid") || return 1
+  mkdir -p "$state/worker.lock"
+  chmod 700 "$state/worker.lock"
+  printf '%s\n' "$fixture_pid" > "$state/worker.lock/pid"
+  printf '%s\n' "$start" > "$state/worker.lock/start"
+  printf '%s\n' "$command" > "$state/worker.lock/command"
+  chmod 600 "$state/worker.lock"/*
+  touch -t 200001010000 "$state/worker.lock"
+  sleep "$hold"
+  kill "$fixture_pid" 2>/dev/null || true
+  wait "$fixture_pid" 2>/dev/null || true
+  rm -rf -- "$state/worker.lock"
+}
+
+FM_REMOTE_JOB_STATE_ROOT="$LINUX_WAIT_STATE"
+FM_REMOTE_JOB_LINUX_STARTUP_WAIT_SECONDS=15
+sleep 300 &
+FIXTURE_PID=$!
+FIXTURE_START=$(fm_remote_job_process_start "$FIXTURE_PID") || fail "the lock fixture process could not be inspected"
+FIXTURE_COMMAND=$(fm_remote_job_process_command "$FIXTURE_PID") || fail "the lock fixture process could not be inspected"
+mkdir -p "$LINUX_WAIT_STATE/worker.lock"
+chmod 700 "$LINUX_WAIT_STATE/worker.lock"
+printf '%s\n' "$FIXTURE_PID" > "$LINUX_WAIT_STATE/worker.lock/pid"
+printf '%s\n' "$FIXTURE_START" > "$LINUX_WAIT_STATE/worker.lock/start"
+printf '%s\n' "$FIXTURE_COMMAND" > "$LINUX_WAIT_STATE/worker.lock/command"
+chmod 600 "$LINUX_WAIT_STATE/worker.lock"/*
+touch -t 200001010000 "$LINUX_WAIT_STATE/worker.lock"
+set +e
+fm_remote_job_ensure_worker "$REMOTE_ROOT" "$LINUX_WAIT_HOME"
+FAIL_RC=$?
+set -e
+FAIL_ERROR=$FM_REMOTE_JOB_ERROR
+kill "$FIXTURE_PID" 2>/dev/null || true
+wait "$FIXTURE_PID" 2>/dev/null || true
+rm -rf -- "$LINUX_WAIT_STATE/worker.lock"
+[ "$FAIL_RC" -ne 0 ] || fail "a 15-second startup bound succeeded against a lock held for 45 seconds"
+assert_contains "$FAIL_ERROR" "worker lock is still held" \
+  "the timeout error did not describe what was still holding the worker lock"
+pass "a Linux worker replacement bounded below the actual release delay fails, not hangs"
+
+FM_REMOTE_JOB_LINUX_STARTUP_WAIT_SECONDS=60
+hold_worker_lock "$LINUX_WAIT_STATE" 45 &
+LINUX_WAIT_HOLDER_PID=$!
+fm_remote_job_ensure_worker "$REMOTE_ROOT" "$LINUX_WAIT_HOME" || fail "$FM_REMOTE_JOB_ERROR"
+wait "$LINUX_WAIT_HOLDER_PID" 2>/dev/null || true
+LINUX_WAIT_HOLDER_PID=
+assert_present "$LINUX_WAIT_STATE/worker.ready" "the replacement worker did not publish readiness after the prior lock released"
+fm_remote_job_worker_identity_matches "$REMOTE_ROOT" "$LINUX_WAIT_HOME" \
+  || fail "the replacement worker did not publish the current code identity"
+pass "a Linux worker replacement waits past the old one-retry budget and succeeds once the prior lock releases"
+
+FM_REMOTE_JOB_STATE_ROOT="$STATE_ROOT"
+FM_REMOTE_JOB_LINUX_STARTUP_WAIT_SECONDS=90
 
 echo "ALL TESTS PASSED"
