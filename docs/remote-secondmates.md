@@ -161,6 +161,8 @@ Raw launch commands are not accepted for remote secondmates.
 Backends that already refuse secondmate launch, currently Orca and cmux, remain unsupported on the remote host.
 
 Startup liveness recovery relaunches a dead or missing remote second mate through this same command, so recovery passes the same readiness gate rather than a weaker one.
+Liveness for a remote route is read only over the wire that way: no local command can observe a pane on another host, so the cheap local endpoint readers recognize the placement from the route record instead of probing it.
+The session-start digest reports it as `endpoint: remote (host=<host> window=<window>)`, and `bin/fm-crew-state.sh` reads the mate's state from the status log the remote worker keeps writing here rather than reporting its backend target gone.
 
 Send routed requests normally:
 
