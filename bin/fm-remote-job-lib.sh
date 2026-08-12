@@ -97,6 +97,8 @@ fm_remote_job_validate_settings() {
   case "$FM_REMOTE_JOB_WAIT_GRACE" in ''|*[!0-9]*) return 1 ;; esac
   [ "$FM_REMOTE_JOB_WAIT_GRACE" -le 300 ] || return 1
   case "$FM_REMOTE_JOB_REAP_SECONDS" in ''|*[!0-9]*|0) return 1 ;; esac
+  case "$FM_REMOTE_JOB_LINUX_STARTUP_WAIT_SECONDS" in ''|*[!0-9]*|0) return 1 ;; esac
+  [ "$FM_REMOTE_JOB_LINUX_STARTUP_WAIT_SECONDS" -le 3600 ] || return 1
   return 0
 }
 
@@ -986,13 +988,16 @@ fm_remote_job_start_linux_worker() { # <remote-root> <account-home>
 # a genuinely dead worker is relaunched promptly, and checks readiness every
 # tenth of a second so a release that clears quickly is not paid for in
 # whole-window increments.
+# Returns 0 once the worker reports ready, 2 when the start itself was refused
+# - which already named its own precise cause in FM_REMOTE_JOB_ERROR - and 1
+# when the deadline passed with the worker still not ready.
 fm_remote_job_wait_for_linux_worker_replacement() { # <root> <account-home>
   local root=$1 account_home=$2 deadline last_start=0 now
   deadline=$(( $(date +%s) + FM_REMOTE_JOB_LINUX_STARTUP_WAIT_SECONDS ))
   while :; do
     now=$(date +%s)
     if [ $((now - last_start)) -ge 1 ]; then
-      fm_remote_job_start_linux_worker "$root" "$account_home" || return 1
+      fm_remote_job_start_linux_worker "$root" "$account_home" || return 2
       FM_REMOTE_JOB_REPAIRED=1
       last_start=$now
     fi
@@ -1033,7 +1038,7 @@ fm_remote_job_worker_lock_state() { # <account-home>
 }
 
 fm_remote_job_ensure_worker() { # <remote-root> <account-home>
-  local root=$1 account_home=$2 platform uid identity_matches=0
+  local root=$1 account_home=$2 platform uid identity_matches=0 wait_status
   FM_REMOTE_JOB_ERROR=
   FM_REMOTE_JOB_REPAIRED=0
   root=$(fm_remote_job_canonical_existing_dir "$root") || {
@@ -1076,9 +1081,14 @@ fm_remote_job_ensure_worker() { # <remote-root> <account-home>
     FM_REMOTE_JOB_REPAIRED=1
     fm_remote_job_wait_for_probe "$root" "$account_home" && return 0
   else
-    fm_remote_job_wait_for_linux_worker_replacement "$root" "$account_home" && return 0
+    wait_status=0
+    fm_remote_job_wait_for_linux_worker_replacement "$root" "$account_home" || wait_status=$?
+    [ "$wait_status" -ne 0 ] || return 0
+    [ "$wait_status" -ne 2 ] || return 1
   fi
-  # shellcheck disable=SC2034 # Sourceable API consumed by the entrypoint and remote doctor.
-  FM_REMOTE_JOB_ERROR="remote job worker did not report ready after startup ($(fm_remote_job_worker_lock_state "$account_home"))"
+  if [ -z "$FM_REMOTE_JOB_ERROR" ]; then
+    # shellcheck disable=SC2034 # Sourceable API consumed by the entrypoint and remote doctor.
+    FM_REMOTE_JOB_ERROR="remote job worker did not report ready after startup ($(fm_remote_job_worker_lock_state "$account_home"))"
+  fi
   return 1
 }
