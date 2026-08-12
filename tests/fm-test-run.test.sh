@@ -627,6 +627,47 @@ SH
   pass "jobs scheduler runs proven scripts; failure propagates; non-proven refused"
 }
 
+test_case_bound_must_be_a_real_bound() {
+  local tmp suite out rc
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-case-bound.XXXXXX")
+  suite="$tmp/bounded.test.sh"
+  cat >"$suite" <<SH
+#!/usr/bin/env bash
+set -u
+# shellcheck source=tests/lib.sh
+. "$ROOT/tests/lib.sh"
+case_that_passes() { pass "case ran"; }
+fm_test_run_cases case_that_passes
+SH
+  chmod 0755 "$suite"
+
+  # A bound of 0 is not "no bound with a bound's name": timeout 0 and alarm 0
+  # both disable the deadline, so accepting it would run the suite unbounded
+  # while looking bounded.
+  rc=0
+  out=$(env -u FM_TEST_CASE FM_TEST_CASE_BOUND=0 bash "$suite" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || { rm -rf "$tmp"; fail "FM_TEST_CASE_BOUND=0 ran cases unbounded instead of failing"; }
+  assert_contains "$out" "FM_TEST_CASE_BOUND" "zero bound must fail by naming the variable"
+  assert_contains "$out" "not ok" "zero bound must report a failing verdict"
+
+  # A non-numeric bound makes `timeout` exit 125 with no verdict for any case,
+  # so it must be rejected before the timed runner is reached.
+  rc=0
+  out=$(env -u FM_TEST_CASE FM_TEST_CASE_BOUND=soon bash "$suite" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || { rm -rf "$tmp"; fail "non-numeric FM_TEST_CASE_BOUND was accepted"; }
+  assert_contains "$out" "FM_TEST_CASE_BOUND" "non-numeric bound must fail by naming the variable"
+  assert_contains "$out" "not ok" "non-numeric bound must report a failing verdict"
+
+  # Adversarial: a real bound must still dispatch the case normally.
+  rc=0
+  out=$(env -u FM_TEST_CASE FM_TEST_CASE_BOUND=60 bash "$suite" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || { rm -rf "$tmp"; fail "valid FM_TEST_CASE_BOUND was rejected (rc=$rc): $out"; }
+  assert_contains "$out" "ok - case ran" "valid bound must still run the case"
+
+  rm -rf "$tmp"
+  pass "per-case bound rejects values that are not a bound"
+}
+
 test_aggregate_json() {
   local tmp a b
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-aggjson.XXXXXX")
@@ -685,4 +726,5 @@ test_portable_serial_shards_partition_the_serial_lane
 test_portable_serial_shard_lane_refusals
 test_jobs_requires_proven_isolated
 test_jobs_parallel_scheduler_and_failure_propagation
+test_case_bound_must_be_a_real_bound
 test_aggregate_json

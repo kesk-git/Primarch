@@ -314,8 +314,10 @@ fm_lock_claim() {
 # is transient and worth waiting out. An owner directory that cannot be created
 # at all - the lock's directory was removed under us, is unwritable, or the
 # filesystem is full - is not: nothing will ever hold that lock, so there is
-# nothing to steal and nothing to wait for. Callers must read it immediately
-# after a failed create, before any nested acquisition overwrites it.
+# nothing to steal and nothing to wait for. fm_lock_try_acquire reports the same
+# distinction: when it fails with this set, FM_LOCK_HELD_PID is empty because
+# there is no holder to name. Callers must read it immediately after a failed
+# create or acquisition, before any nested acquisition overwrites it.
 FM_LOCK_ROOT_UNUSABLE=0
 
 fm_lock_try_create() {
@@ -697,8 +699,13 @@ fm_lock_try_acquire() {
   if [ "$lockdir" = "$STATE/.watch.lock" ] \
     && ! _fm_recovery_marker_publish "$STATE/.watcher-down" downtime; then
     fm_lock_release "$steal"
-    FM_LOCK_HELD_PID=$cur
     FM_LOCK_OWNER_DIR=
+    if [ "$FM_LOCK_ROOT_UNUSABLE" -eq 1 ] || [ ! -d "$STATE" ] || [ ! -w "$STATE" ]; then
+      FM_LOCK_ROOT_UNUSABLE=1
+      FM_LOCK_HELD_PID=
+      return 1
+    fi
+    FM_LOCK_HELD_PID=$cur
     return 1
   fi
   fm_lock_remove_path "$lockdir" || true

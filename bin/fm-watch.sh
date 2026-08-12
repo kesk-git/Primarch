@@ -719,6 +719,10 @@ fi
 }
 
 if ! fm_lock_try_acquire "$WATCH_LOCK"; then
+  if [ "${FM_LOCK_ROOT_UNUSABLE:-0}" -eq 1 ]; then
+    echo "watcher: state directory $STATE is missing or unwritable, so $WATCH_LOCK can never be held; no watcher holds it. Restore that directory before re-arming." >&2
+    exit 1
+  fi
   BEAT="$STATE/.last-watcher-beat"
   if [ -n "${FM_LOCK_HELD_PID:-}" ]; then
     if [ -e "$BEAT" ]; then

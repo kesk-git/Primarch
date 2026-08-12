@@ -1014,6 +1014,64 @@ test_watcher_whose_state_dir_disappears_exits_instead_of_spinning() {
   pass "watcher whose state directory disappears exits instead of spinning"
 }
 
+test_watcher_unusable_state_root_names_the_directory_not_a_pid() {
+  # Same parked position as the case above, asking the other half of the
+  # question: exiting is not enough if the log blames the wrong thing. The pid
+  # in the stale lock is dead and nothing holds the lock, so reporting it as a
+  # live holder sends whoever reads the log after a process that never existed.
+  # The one fact that explains the exit is the state root being unusable, so
+  # that is what must appear, and no pid may be offered as the holder.
+  #
+  # The root is made unusable by revoking write permission rather than by
+  # removing it, because that is the one mutation that cannot change which
+  # branch is under test: every step between the steal mutex and the marker
+  # publish only READS the lock it already found, so they still pass, and the
+  # publish still fails for the one reason this case is about. Removing the
+  # directory instead races those reads and lands on a different exit.
+  local dir state fakebin out holder stale pid i status log
+  dir=$(make_case state-root-unusable)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  mark_pr_check_migration_complete "$state"
+
+  sleep 300 &
+  holder=$!
+  stale=$(dead_pid)
+  mkdir "$state/.watcher-down.lock"
+  printf '%s\n' "$holder" > "$state/.watcher-down.lock/pid"
+  mkdir "$state/.watch.lock"
+  printf '%s\n' "$stale" > "$state/.watch.lock/pid"
+
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2>&1 &
+  pid=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -e "$state/.watch.lock.steal" ] && [ ! -L "$state/.watch.lock.steal" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if [ ! -e "$state/.watch.lock.steal" ] && [ ! -L "$state/.watch.lock.steal" ]; then
+    chmod 0700 "$state" 2>/dev/null || true
+    kill "$holder" 2>/dev/null || true
+    fail "watcher did not park inside the stale-lock reclaim: $(cat "$out")"
+  fi
+
+  chmod 0500 "$state"
+  wait_for_exit "$pid" 300
+  status=$?
+  chmod 0700 "$state"
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  [ "$status" -ne 124 ] || fail "watcher kept running once its state root became unusable"
+  log=$(cat "$out" 2>/dev/null || true)
+  assert_contains "$log" "$state" "watcher must name the state directory it cannot use"
+  assert_not_contains "$log" "$stale" "watcher must not present the stale pid as a holder"
+  assert_not_contains "$log" "held by live pid" "watcher must not report contention for an unusable state root"
+  assert_not_contains "$log" "already running" "watcher must not claim a peer is running when nothing holds the lock"
+  [ "$status" -eq 1 ] || fail "watcher exited $status instead of failing loudly on an unusable state root"
+  pass "watcher reports the unusable state directory rather than a phantom holder"
+}
+
 test_stopped_watcher_is_live_but_stale_then_exit_is_classified() {
   local dir state fakebin armout armpid watcher_pid i status
   dir=$(make_case stopped-watcher)
@@ -1243,4 +1301,5 @@ fm_test_run_cases \
   test_arm_fails_loud_when_no_fresh_watcher_confirmable \
   test_cycle_exit_ledger_links_successor_and_stays_bounded \
   test_watcher_whose_state_dir_disappears_exits_instead_of_spinning \
+  test_watcher_unusable_state_root_names_the_directory_not_a_pid \
   test_stopped_watcher_is_live_but_stale_then_exit_is_classified

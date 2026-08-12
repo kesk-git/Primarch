@@ -88,12 +88,31 @@ fm_test_reap_case_jobs() {
   done
 }
 
+# bin/fm-timeout-lib.sh states it plainly: a non-positive bound is not a bound,
+# because `timeout 0` and the perl fallback's `alarm 0` both disable the
+# deadline. So FM_TEST_CASE_BOUND=0 - the obvious way to switch the bound off
+# while debugging - would silently restore the unbounded run this dispatcher
+# exists to prevent, while still looking bounded; a non-numeric value would exit
+# 125 out of `timeout` with no named case at all. Both are rejected here, loudly
+# and by name, before any case runs.
+fm_test_assert_case_bound() {
+  local bound=${FM_TEST_CASE_BOUND:-}
+  case "$bound" in
+    '' | *[!0-9]*)
+      fail "FM_TEST_CASE_BOUND must be a whole number of seconds, got '$bound'"
+      ;;
+  esac
+  [ "$bound" -gt 0 ] \
+    || fail "FM_TEST_CASE_BOUND must be greater than 0 seconds, got '$bound'; 0 disables the bound rather than setting one"
+}
+
 fm_test_run_cases() {
   local case_name rc
   if [ -n "${FM_TEST_CASE:-}" ]; then
     "$FM_TEST_CASE"
     return $?
   fi
+  fm_test_assert_case_bound
   for case_name in "$@"; do
     rc=0
     (
