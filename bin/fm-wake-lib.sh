@@ -309,10 +309,25 @@ fm_lock_claim() {
   return 0
 }
 
+# FM_LOCK_ROOT_UNUSABLE distinguishes the two ways fm_lock_try_create can fail.
+# Contention (the lock already exists, a claim was blocked, a link race was lost)
+# is transient and worth waiting out. An owner directory that cannot be created
+# at all - the lock's directory was removed under us, is unwritable, or the
+# filesystem is full - is not: nothing will ever hold that lock, so there is
+# nothing to steal and nothing to wait for. fm_lock_try_acquire reports the same
+# distinction: when it fails with this set, FM_LOCK_HELD_PID is empty because
+# there is no holder to name. Callers must read it immediately after a failed
+# create or acquisition, before any nested acquisition overwrites it.
+FM_LOCK_ROOT_UNUSABLE=0
+
 fm_lock_try_create() {
   local lockdir=$1 allowed_steal_owner=${2:-} ownerdir
   FM_LOCK_OWNER_DIR=
-  ownerdir=$(fm_lock_owner_dir "$lockdir") || return 1
+  FM_LOCK_ROOT_UNUSABLE=0
+  if ! ownerdir=$(fm_lock_owner_dir "$lockdir"); then
+    FM_LOCK_ROOT_UNUSABLE=1
+    return 1
+  fi
   if [ -e "$lockdir" ] || [ -L "$lockdir" ]; then
     fm_lock_discard_owner "$ownerdir"
     return 1
@@ -623,6 +638,13 @@ fm_lock_try_acquire() {
   if fm_lock_try_create "$lockdir"; then
     return 0
   fi
+  # An unusable lock root has no holder to displace. Descending into the
+  # "$lockdir.steal" mutex would fail for that same reason at every level, and
+  # each level appends another ".steal" to the path, so the recursion never
+  # terminates and never even touches the filesystem it is trying to repair.
+  if [ "$FM_LOCK_ROOT_UNUSABLE" -eq 1 ]; then
+    return 1
+  fi
 
   pid=$(cat "$lockdir/pid" 2>/dev/null || true)
   if fm_pid_alive "$pid"; then
@@ -677,8 +699,13 @@ fm_lock_try_acquire() {
   if [ "$lockdir" = "$STATE/.watch.lock" ] \
     && ! _fm_recovery_marker_publish "$STATE/.watcher-down" downtime; then
     fm_lock_release "$steal"
-    FM_LOCK_HELD_PID=$cur
     FM_LOCK_OWNER_DIR=
+    if [ "$FM_LOCK_ROOT_UNUSABLE" -eq 1 ] || [ ! -d "$STATE" ] || [ ! -w "$STATE" ]; then
+      FM_LOCK_ROOT_UNUSABLE=1
+      FM_LOCK_HELD_PID=
+      return 1
+    fi
+    FM_LOCK_HELD_PID=$cur
     return 1
   fi
   fm_lock_remove_path "$lockdir" || true
@@ -697,9 +724,14 @@ fm_lock_try_acquire() {
   return "$rc"
 }
 
+# Blocks until the lock is held. Waiting is only honest while the lock CAN be
+# taken: an unusable lock root never yields one, so this returns non-zero and
+# lets the caller take its existing failure path instead of blocking forever.
+# Contention is still waited out indefinitely, unchanged.
 fm_lock_acquire_wait() {
   local lockdir=$1
   while ! fm_lock_try_acquire "$lockdir"; do
+    [ "$FM_LOCK_ROOT_UNUSABLE" -eq 1 ] && return 1
     sleep 0.1
   done
 }

@@ -1357,7 +1357,9 @@ fm_super_main() {
 
   # --- single instance (portable lock, no flock dependency) ------------------
   if ! fm_lock_try_acquire "$LOCK"; then
-    if [ -n "${FM_LOCK_HELD_PID:-}" ]; then
+    if [ "${FM_LOCK_ROOT_UNUSABLE:-0}" -eq 1 ]; then
+      echo "error: the directory holding $LOCK is missing or unwritable, so that lock can never be held; no daemon holds it. Restore that directory before starting the daemon." >&2
+    elif [ -n "${FM_LOCK_HELD_PID:-}" ]; then
       echo "error: another fm-supervise-daemon is already running (pid $FM_LOCK_HELD_PID, lock $LOCK held)" >&2
     else
       echo "error: another fm-supervise-daemon is already running (lock $LOCK held)" >&2
