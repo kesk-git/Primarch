@@ -60,11 +60,20 @@ fm_backend_tmux_send_text_submit() {  # <target> <text> <retries> <enter-sleep> 
 # firstmate itself runs inside tmux, else ensure a dedicated detached
 # "firstmate" session exists. Mirrors fm-spawn.sh's container-ensure block;
 # prints the resolved session name.
+#
+# The existence probe is anchored through fm_backend_tmux_anchor_target, the
+# same owner the endpoint-presence read uses, so the side that decides WHERE a
+# task is written agrees with the side that reads it back. Unanchored, this
+# probe prefix-resolves: with only `firstmate-old` alive it succeeds, so no
+# `firstmate` session is created, the window is really made in `firstmate-old`,
+# and the meta records `firstmate:fm-<id>` - a live task that then reads dead
+# on every endpoint reader.
 fm_backend_tmux_container_ensure() {
   if [ -n "${TMUX:-}" ]; then
     tmux display-message -p '#S'
   else
-    tmux has-session -t firstmate 2>/dev/null || tmux new-session -d -s firstmate
+    tmux has-session -t "$(fm_backend_tmux_anchor_target firstmate)" 2>/dev/null \
+      || tmux new-session -d -s firstmate
     printf 'firstmate'
   fi
 }
@@ -122,19 +131,26 @@ fm_backend_tmux_send_literal() {  # <target> <text>
 # fm_backend_tmux_kill: remove one explicitly named task window, best-effort.
 # Empty, omitted, and malformed targets return nonzero before invoking tmux so
 # tmux can never interpret an empty target as the caller's current window.
+# Exact-target resolution is fm_backend_tmux_anchor_target's (bin/fm-backend.sh)
+# alone, shared with the endpoint-presence probe. A bare name with no ':' is
+# still refused here regardless of what that helper would accept: this primitive
+# destroys a window, so it takes only a fully qualified session:window.
 fm_backend_tmux_kill() {  # <target>
-  local target=${1:-} session window
+  local target=${1:-} window_id
   case "$target" in
-    *:*)
-      session=${target%%:*}
-      window=${target#*:}
-      ;;
+    *:*) ;;
     *) return 1 ;;
   esac
-  case "$session:$window" in
-    :*|*:|*:*:*) return 1 ;;
-  esac
-  tmux kill-window -t "=$session:=$window" 2>/dev/null || true
+  fm_backend_tmux_anchor_target "$target" >/dev/null || return 1
+  # Resolve the window through the shared inventory owner and kill THAT window
+  # by its `@id`, never by a composed name string. Handing tmux
+  # `=<session>:=<window>` is destructive here, not merely wrong: tmux reads a
+  # literal `.` as the pane separator, so killing a target `sess:fm-v1.0` that
+  # names no window at all resolved to live window `fm-v1` pane 0 and destroyed
+  # that different worker's window (measured, tmux 3.7b), while the real dotted
+  # window `sess:fm-v1.2-fix` survived as a silent no-op.
+  window_id=$(fm_backend_tmux_window_id "${target%%:*}" "${target#*:}") || return 0
+  tmux kill-window -t "$window_id" 2>/dev/null || true
 }
 
 # fm_backend_tmux_current_command: <target>'s live foreground process name -

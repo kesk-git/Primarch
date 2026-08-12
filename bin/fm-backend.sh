@@ -349,6 +349,22 @@ fm_backend_of_meta() {  # <meta-file>
   printf '%s' "${v:-tmux}"
 }
 
+# fm_backend_is_remote_placement: 0 if <meta-file> records a worker placed on
+# another host. The ONE owner of that question, so the cheap local endpoint
+# readers decide it the same way bin/fm-control.sh and bin/fm-fleet-snapshot.sh
+# already do - on `remote_host`, the fact that the worker IS remote.
+#
+# It is deliberately NOT the `window=remote:<id>` string those metas also carry.
+# A tmux session named `remote` makes an ordinary LOCAL task record
+# `window=remote:fm-<id>` too (fm_backend_tmux_container_ensure returns `#S`
+# verbatim), so keying on the string would report every crashed window in that
+# session alive - the exact dead-reads-alive failure this predicate exists to
+# catch. It would also let a user-typed `remote:anything` pass bin/fm-send.sh's
+# live-endpoint gate.
+fm_backend_is_remote_placement() {  # <meta-file>
+  [ -n "$(fm_meta_get "$1" remote_host)" ]
+}
+
 fm_backend_target_of_meta() {  # <meta-file>
   local meta=$1 backend terminal window
   backend=$(fm_backend_of_meta "$meta")
@@ -819,6 +835,87 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
   esac
 }
 
+# fm_backend_tmux_anchor_target: the ONE owner of tmux exact-target
+# resolution. Prints TARGET in the form that makes tmux match it exactly, or
+# returns 1 for an empty or malformed target so no caller can hand tmux
+# something it would resolve to the caller's own current session/window.
+#
+# Unanchored, tmux resolves a name as exact, then start-of-name, then glob, on
+# BOTH the session and the window part, so a dead `firstmate:fm-auth` matches a
+# live sibling window `fm-auth-fix`, and a dead session `revsess` matches a live
+# `revsess-2`. Measured on tmux 3.7b (docs/verification/runtime-backends.md):
+#   - `=session:=window` anchors both parts, and still resolves a window INDEX
+#     (`=firstmate:=0` matches index 0) and a pane suffix (`=s:=w.0`).
+#   - An empty target reads ALIVE against any live server, and so does a target
+#     whose session part is empty (`=:=win`), hence the malformed rejection.
+#   - Pane ids (`%N`) and window ids (`@N`) are ALREADY exact and must stay
+#     unanchored - `=%0` and `=@0` both fail against the pane and window they
+#     name, so anchoring them would break the supervisor daemon's $TMUX_PANE
+#     default target.
+# This lives here rather than in bin/backends/tmux.sh so the presence probe
+# below can use it without a fm_backend_source step, which would turn an
+# adapter-load failure into a `dead` endpoint verdict. It runs no tmux command.
+fm_backend_tmux_anchor_target() {  # <target>
+  local target=${1:-} session window
+  [ -n "$target" ] || return 1
+  case "$target" in
+    *:*)
+      session=${target%%:*}
+      window=${target#*:}
+      case "$session:$window" in
+        :*|*:|*:*:*) return 1 ;;
+      esac
+      printf '%s' "=$session:=$window"
+      ;;
+    %*|@*) printf '%s' "$target" ;;
+    *) printf '%s' "=$target" ;;
+  esac
+}
+
+# fm_backend_tmux_resolve_window: the ONE owner of "which real window does this
+# session:window part name?". Prints that window's `@id` and returns 0, or
+# returns 1 if the session's live inventory holds no such window.
+#
+# It never hands tmux a composed `session:window` NAME string, because tmux's
+# target parser reads a literal `.` as the pane separator and such a string is
+# ambiguous in both directions (see fm_backend_target_exists below and
+# docs/verification/runtime-backends.md). The session part is anchored AND given
+# a trailing `:` so tmux parses it as a session, not a window - without the
+# colon a session name containing a `.` fails the same way. The window part is
+# then compared literally against that session's real window names, indexes, and
+# window ids, so it stays exact: a name that is only a prefix of a live window
+# misses.
+#
+# Returning the `@id` rather than a boolean is what lets the destructive
+# `fm_backend_tmux_kill` act on the resolved window itself instead of on a name
+# string tmux would re-parse.
+fm_backend_tmux_resolve_window() {  # <session> <window-part>
+  local session=$1 want=$2
+  [ -n "$session" ] && [ -n "$want" ] || return 1
+  tmux list-windows -t "=$session:" -F '#{window_name}
+#{window_index}
+#{window_id}' 2>/dev/null | grep -Fqx "$want"
+}
+
+# fm_backend_tmux_window_id: the same resolution, printing the matched window's
+# `@id`. Separate from the boolean above only because the destructive kill path
+# needs an object to act on rather than a yes/no - the session-target and
+# literal-match rules are identical.
+fm_backend_tmux_window_id() {  # <session> <window-part>
+  local session=$1 want=$2 out
+  [ -n "$session" ] && [ -n "$want" ] || return 1
+  out=$(tmux list-windows -t "=$session:" -F '#{window_id} #{window_name}
+#{window_id} #{window_index}
+#{window_id} #{window_id}' 2>/dev/null \
+    | while IFS=' ' read -r wid rest; do
+        [ "$rest" = "$want" ] || continue
+        printf '%s' "$wid"
+        break
+      done)
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
+}
+
 # fm_backend_target_exists: cheap, READ-ONLY existence check - does the
 # recorded TARGET endpoint still exist on BACKEND? Never starts a server or
 # session: for herdr this deliberately queries the pane directly instead of
@@ -828,14 +925,69 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
 # probe). A gone tmux window or an unqueryable herdr pane (server down, pane
 # closed), missing zellij pane, or unreadable Orca terminal simply fails, which
 # IS "does not exist" for this purpose.
-# Mirrors fm-crew-state.sh's pane_readable check; exists here as one shared
-# primitive so callers that only need a fast alive/dead read (recovery
-# digests, the session-start fleet digest) do not re-derive it inline.
+# The one owner of that check: fm-crew-state.sh's pane_readable delegates its
+# tmux arm here rather than re-deriving it, so callers that only need a fast
+# alive/dead read (recovery digests, the session-start fleet digest) all move
+# together when the probe changes.
 fm_backend_target_exists() {  # <backend> <target> [expected-label]
-  local backend=$1 target=$2 expected_label=${3:-} session pane
+  local backend=$1 target=$2 expected_label=${3:-} session pane anchored window_id
   case "$backend" in
     tmux)
-      tmux display-message -p -t "$target" '#{pane_id}' >/dev/null 2>&1
+      # display-message is unusable here: it silently falls back to the
+      # client's current pane and returns rc=0 for an absent window in a live
+      # session, and even for a session that does not exist at all (verified
+      # empirically, tmux 3.7b - see docs/verification/runtime-backends.md).
+      #
+      # A composed `session:window` NAME string is never handed to tmux to
+      # resolve, because tmux's target parser reads a literal `.` as the pane
+      # separator and that makes such a string ambiguous in both directions:
+      #   - `=sess:=fm-v1.2-fix` fails against a LIVE window of exactly that
+      #     name (parsed as window `fm-v1`, pane `2-fix`), and
+      #   - `=sess:=fm-v1.0` SUCCEEDS with no window of that name at all, by
+      #     resolving to a different live window `fm-v1`, pane 0.
+      # Task ids may contain `.` (fm_backend_endpoint_atom_valid allows it) and
+      # a task's window is named `fm-<task-id>`, so both directions are
+      # reachable from an ordinary spawn.
+      #
+      # Instead the parts are resolved separately against real state through
+      # fm_backend_tmux_resolve_window, the same list-and-filter shape the
+      # recovery-grade fm_backend_tmux_agent_state uses.
+      #
+      # A window part that resolves to no real window is then re-read ONCE as a
+      # `<window>.<pane-index>` spec, which is the documented FM_SUPERVISOR_TARGET
+      # pane shape (docs/configuration.md) and is what bin/fm-send.sh can still
+      # deliver to. That re-read is refused for a window part starting with
+      # `fm-`, this fleet's reserved task-window prefix (bin/fm-spawn.sh names
+      # every task window `fm-<task-id>`): those are always window identities, so
+      # a gone task `fm-v1.0` must NOT read alive off live sibling `fm-v1`'s
+      # pane 0. Without that guard the two readings are indistinguishable - both
+      # are a live pane to tmux - and the dead-reads-alive case wins by accident.
+      #
+      # Bare pane ids (`%N`) and window ids (`@N`) are already exact and
+      # unambiguous, so they stay on has-session; anchoring them breaks them.
+      anchored=$(fm_backend_tmux_anchor_target "$target") || return 1
+      case "$target" in
+        %*|@*)
+          tmux has-session -t "$anchored" >/dev/null 2>&1
+          ;;
+        *:*)
+          session=${target%%:*}
+          pane=${target#*:}
+          fm_backend_tmux_resolve_window "$session" "$pane" && return 0
+          case "$pane" in
+            fm-*) return 1 ;;
+            *.[0-9]|*.[0-9][0-9]|*.[0-9][0-9][0-9]) ;;
+            *) return 1 ;;
+          esac
+          fm_backend_tmux_resolve_window "$session" "${pane%.*}" || return 1
+          window_id=$(fm_backend_tmux_window_id "$session" "${pane%.*}") || return 1
+          tmux list-panes -t "$window_id" -F '#{pane_index}' 2>/dev/null \
+            | grep -Fqx "${pane##*.}"
+          ;;
+        *)
+          tmux has-session -t "=$target:" >/dev/null 2>&1
+          ;;
+      esac
       ;;
     herdr)
       fm_backend_source herdr || return 1

@@ -63,7 +63,12 @@ case "${1:-}" in
     for a in "$@"; do case "$a" in *cursor_y*) printf '1\n'; exit 0 ;; esac; done
     printf 'fakepane\n'; exit 0 ;;
   capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows)
+    # The endpoint-presence read resolves session:window by listing the
+    # session's windows; this fixture simulates no dead endpoint, so it names
+    # every window part its own cases target.
+    printf '%s\n' w1 elsewhere fm-domain fm-t1 fm-t2
+    exit 0 ;;
 esac
 exit 0
 SH

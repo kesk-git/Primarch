@@ -24,11 +24,13 @@ tmux new -s firstmate
 
 Crew tasks become windows in that session.
 `tmux display-message -p '#S'` prints its name.
-If the primary harness runs outside tmux, Firstmate creates or reuses a detached session named `firstmate`:
+If the primary harness runs outside tmux, Firstmate creates or reuses a detached session named exactly `firstmate`:
 
 ```sh
 tmux attach -t firstmate
 ```
+
+A session whose name merely starts with `firstmate`, such as `firstmate-old`, is never adopted for that role: Firstmate creates the exact name it records in task metadata.
 
 Each task window is named `fm-<id>`.
 
@@ -47,6 +49,7 @@ Verify setup by spawning a small task and confirming its `fm-<id>` window appear
 ### Agent liveness probe
 
 A target-existence check proves only that the pane exists.
+It resolves the recorded session and window against live tmux state instead of asking tmux to interpret the target, so a crashed `fm-auth` window never reads alive off a live `fm-auth-fix` sibling, a task id containing a `.` still resolves, and a session that is gone entirely reads dead; [`verification/runtime-backends.md`](verification/runtime-backends.md#endpoint-presence-check-fm_backend_target_exists) owns the evidence.
 The deeper tmux agent-liveness probe first verifies exact window membership, then reads process names to distinguish a running harness from a bare idle shell.
 It classifies recognized Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, and Muse process names as `alive`, common shells as `dead`, an authoritatively absent window as `missing`, unreadable state as `unreadable`, and every other process as `ambiguous`.
 Only `dead` and `missing` authorize recovery because a false dead result could launch a duplicate agent.

@@ -156,11 +156,216 @@ if fm_backend_tmux_resolve_bare_selector "no-such-window-xyz" 2>/dev/null; then
 fi
 pass "real tmux: fm_backend_tmux_resolve_bare_selector fails for a window that does not exist"
 
+# --- fm_backend_target_exists: alive before kill, dead after ----------------
+# The window under test is presence-checked while it is still live, then again
+# after it is killed but the session itself remains live (window 0 survives) -
+# the exact "missing window inside a live session" shape that a naive
+# tmux display-message read gets wrong (verified empirically, tmux 3.7b:
+# docs/verification/runtime-backends.md).
+
+fm_backend_target_exists tmux "$TARGET" \
+  || fail "fm_backend_target_exists should report the live window alive"
+pass "real tmux: fm_backend_target_exists reports a live window alive"
+
+# A sibling window whose name strictly EXTENDS the window under test, so the
+# post-kill checks below cover tmux's start-of-name target resolution: an
+# unanchored `smoke:fm-smoke1` lookup resolves to the live `fm-smoke1-sibling`
+# and reads a dead endpoint as alive. Task windows are `fm-<task-id>` over
+# free-form slugs, so this collision is reachable in a real fleet (a crashed
+# `auth` next to a live `auth-fix`).
+SIBLING="$WINDOW-sibling"
+fm_backend_tmux_create_task "$SESSION" "$SIBLING" "$HOME" \
+  || fail "could not create the name-extending sibling window"
+
 # --- kill and recovery-grade missing-window classification ------------------
 
 fm_backend_tmux_kill "$TARGET"
 if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$WINDOW"; then
   fail "fm_backend_tmux_kill did not remove the window"
+fi
+
+tmux has-session -t "$SESSION" >/dev/null 2>&1 \
+  || fail "the session itself must still be live after killing only its second window"
+
+if fm_backend_target_exists tmux "$TARGET" 2>/dev/null; then
+  fail "fm_backend_target_exists should report a killed window dead even though its session is still live and a window whose name extends it ($SIBLING) is live"
+fi
+pass "real tmux: fm_backend_target_exists reports a killed window dead while its session and a name-extending sibling stay live"
+
+fm_backend_target_exists tmux "$SESSION:$SIBLING" \
+  || fail "the live name-extending sibling window must still read alive"
+pass "real tmux: fm_backend_target_exists still reports the live name-extending sibling alive"
+
+if fm_backend_target_exists tmux "$SESSION:${WINDOW%1}" 2>/dev/null; then
+  fail "fm_backend_target_exists should report a window name that is only a PREFIX of live windows dead"
+fi
+pass "real tmux: fm_backend_target_exists reports a bare name prefix of live windows dead"
+
+# The session part prefix-resolves the same way, both inside a session:window
+# target and for a bare session-name-only target.
+fm_backend_target_exists tmux "$SESSION" \
+  || fail "the live session itself must read alive as a bare session-name target"
+if fm_backend_target_exists tmux "${SESSION%e}" 2>/dev/null; then
+  fail "a bare session name that is only a PREFIX of the live session must read dead"
+fi
+if fm_backend_target_exists tmux "${SESSION%e}:$SIBLING" 2>/dev/null; then
+  fail "a session name that is only a PREFIX of the live session must read dead"
+fi
+pass "real tmux: fm_backend_target_exists anchors the session part too, bare and qualified"
+
+# A pane id is already exact and must stay unanchored - `=%N` resolves nothing.
+live_pane=$(tmux display-message -p -t "$SESSION:$SIBLING" '#{pane_id}')
+[ -n "$live_pane" ] || fail "could not read a live pane id to check pane-id targeting"
+fm_backend_target_exists tmux "$live_pane" \
+  || fail "a live pane id target must read alive (the supervisor daemon's \$TMUX_PANE default)"
+if fm_backend_target_exists tmux '%999' 2>/dev/null; then
+  fail "an absent pane id must read dead"
+fi
+pass "real tmux: fm_backend_target_exists reads bare pane-id targets alive and dead correctly"
+
+# A window name containing a literal `.` - reachable through the ordinary spawn
+# path, since task ids may contain dots and the window is named `fm-<task-id>`.
+# tmux splits a target's window part on `.` as the pane separator, so no target
+# syntax can name this window: both `smoke:fm-v1.2-fix` and the anchored
+# `=smoke:=fm-v1.2-fix` fail against it while it is LIVE.
+DOTTED="fm-v1.2-fix"
+fm_backend_tmux_create_task "$SESSION" "$DOTTED" "$HOME" \
+  || fail "could not create the dotted-name window"
+
+fm_backend_target_exists tmux "$SESSION:$DOTTED" \
+  || fail "a LIVE window whose name contains a dot must read alive"
+pass "real tmux: fm_backend_target_exists reports a live dotted window name alive"
+
+# Exactness must survive the dot-safe path: a strict prefix of the dotted name
+# (the part tmux itself would truncate at the dot) must still read dead.
+if fm_backend_target_exists tmux "$SESSION:fm-v1" 2>/dev/null; then
+  fail "a name that is only a PREFIX of the live dotted window must read dead"
+fi
+if fm_backend_target_exists tmux "$SESSION:fm-v1.2" 2>/dev/null; then
+  fail "a dotted name that is only a PREFIX of the live dotted window must read dead"
+fi
+pass "real tmux: a prefix of a live dotted window name still reads dead"
+
+# The other direction of the same ambiguity: a target whose window part is
+# `<live-window-name>.<valid-pane-index>` names a window that does NOT exist,
+# but tmux resolves that string to the live base window's pane and reports it
+# present. Reachable from an ordinary spawn: tasks `v1` and `v1.0` produce
+# windows `fm-v1` and `fm-v1.0`, so when `v1.0` dies and `v1` is still live the
+# gone worker would read alive.
+COLLIDER="fm-v1"
+fm_backend_tmux_create_task "$SESSION" "$COLLIDER" "$HOME" \
+  || fail "could not create the pane-suffix collider window"
+tmux list-panes -t "=$SESSION:=$COLLIDER" -F '#{pane_index}' | grep -Fqx 0 \
+  || fail "the collider window must have a pane 0 for this case to be meaningful"
+if tmux list-windows -t "=$SESSION:" -F '#{window_name}' | grep -Fqx "$COLLIDER.0"; then
+  fail "the fixture must NOT contain a window actually named $COLLIDER.0"
+fi
+
+if fm_backend_target_exists tmux "$SESSION:$COLLIDER.0" 2>/dev/null; then
+  fail "a target naming a window that does not exist must read dead, even when tmux would resolve it as <live window>.<pane index>"
+fi
+pass "real tmux: <live-window>.<pane-index> reads dead when no window has that name"
+
+fm_backend_target_exists tmux "$SESSION:$COLLIDER" \
+  || fail "the live base window of the pane-suffix collision must still read alive"
+pass "real tmux: the live base window of a pane-suffix collision still reads alive"
+
+# `session:window.pane` IS a supported target shape (a documented
+# FM_SUPERVISOR_TARGET form, and one fm-send can deliver to), so a live pane
+# must read alive. It is distinguished from the collision above by the fleet's
+# own reserved `fm-` task-window prefix: `fm-<task-id>` is always a window
+# identity, so `fm-v1.0` stays dead while `<other>.<pane>` resolves.
+PANEWIN="split-check"
+fm_backend_tmux_create_task "$SESSION" "$PANEWIN" "$HOME" \
+  || fail "could not create the pane-suffix window"
+tmux split-window -t "=$SESSION:=$PANEWIN" \
+  || fail "could not split the pane-suffix window"
+tmux list-panes -t "=$SESSION:=$PANEWIN" -F '#{pane_index}' | grep -Fqx 1 \
+  || fail "the pane-suffix window must have a pane 1 for this case to be meaningful"
+
+fm_backend_target_exists tmux "$SESSION:$PANEWIN.1" \
+  || fail "a LIVE, deliverable pane target must read alive"
+fm_backend_target_exists tmux "$SESSION:$PANEWIN.0" \
+  || fail "pane 0 of a live window must read alive"
+if fm_backend_target_exists tmux "$SESSION:$PANEWIN.9" 2>/dev/null; then
+  fail "an absent pane index must read dead"
+fi
+if fm_backend_target_exists tmux "$SESSION:no-such-window.0" 2>/dev/null; then
+  fail "a pane suffix on an absent window must read dead"
+fi
+pass "real tmux: a live session:window.pane target reads alive, absent pane and window read dead"
+
+# The kill path must resolve the same way the read path does. Handing tmux a
+# composed `=<session>:=<window>` name is destructive here, not merely wrong:
+# tmux reads the `.` as a pane separator, so killing a target that names NO
+# window resolved to a different live window and destroyed it.
+if fm_backend_target_exists tmux "$SESSION:$COLLIDER"; then
+  fm_backend_tmux_kill "$SESSION:$COLLIDER.0" \
+    || fail "fm_backend_tmux_kill must stay best-effort on a target that names no window"
+  fm_backend_target_exists tmux "$SESSION:$COLLIDER" \
+    || fail "killing '$SESSION:$COLLIDER.0' (which names NO window) destroyed the live window $COLLIDER"
+  pass "real tmux: fm_backend_tmux_kill does not destroy a different live window on a pane-suffix collision"
+fi
+
+# The dotted window is killed through the public interface: no `-t` name syntax
+# can address it, so this also pins that kill resolves by inventory.
+fm_backend_tmux_kill "$SESSION:$DOTTED" \
+  || fail "fm_backend_tmux_kill failed on the dotted-name window"
+if tmux list-windows -t "=$SESSION:" -F '#{window_name}' | grep -Fqx "$DOTTED"; then
+  fail "fm_backend_tmux_kill did not remove the dotted-name window"
+fi
+pass "real tmux: fm_backend_tmux_kill removes a window whose name contains a dot"
+if fm_backend_target_exists tmux "$SESSION:$DOTTED" 2>/dev/null; then
+  fail "a REMOVED window whose name contains a dot must read dead"
+fi
+pass "real tmux: fm_backend_target_exists reports a removed dotted window name dead"
+
+if fm_backend_target_exists tmux "no-such-session-xyz:no-such-window-xyz" 2>/dev/null; then
+  fail "fm_backend_target_exists should report a wholly nonexistent session dead"
+fi
+pass "real tmux: fm_backend_target_exists reports a wholly nonexistent session dead"
+
+# A SESSION name containing a literal `.`, which the fleet gets verbatim from
+# `#S` whenever firstmate runs inside tmux. The session part has the same
+# pane-separator ambiguity as the window part, so it must be resolved as a
+# session rather than handed to tmux as a bare target name.
+#
+# Whether a session name may contain a `.` at all is a tmux-version property:
+# tmux 3.2 through at least 3.5a rewrite every `.` and `:` in a new session name
+# to `_` (session_check_name in session.c), while tmux 3.6+ keeps the name
+# verbatim (measured: tmux 3.7b creates and lists `smoke.v2` unchanged). The
+# created name is therefore read back from tmux itself rather than assumed, and
+# the case is skipped - loudly, naming the version - where this tmux makes a
+# dotted session name unrepresentable, since no fleet running on it can reach
+# the shape these assertions pin.
+DOTTED_SESSION="smoke.v2"
+DOTTED_SESSION_WINDOW="fm-v2.1-fix"
+created_session=$(tmux new-session -d -P -F '#{session_name}' \
+  -s "$DOTTED_SESSION" -n "$DOTTED_SESSION_WINDOW" -x 200 -y 50) \
+  || fail "could not create the dotted-name session"
+
+if [ "$created_session" != "$DOTTED_SESSION" ]; then
+  echo "skip: this tmux ($(tmux -V)) rewrites '.' out of session names (asked for '$DOTTED_SESSION', got '$created_session'); a dotted session name is unreachable here"
+else
+  fm_backend_target_exists tmux "$DOTTED_SESSION:$DOTTED_SESSION_WINDOW" \
+    || fail "a LIVE window in a session whose NAME contains a dot must read alive"
+  fm_backend_target_exists tmux "$DOTTED_SESSION" \
+    || fail "a live session whose name contains a dot must read alive as a bare target"
+  pass "real tmux: a dotted session name resolves, bare and qualified"
+
+  if fm_backend_target_exists tmux "$DOTTED_SESSION:fm-gone" 2>/dev/null; then
+    fail "an absent window in a dotted-name session must read dead"
+  fi
+  if fm_backend_target_exists tmux "smoke.v9:$DOTTED_SESSION_WINDOW" 2>/dev/null; then
+    fail "a window in an absent dotted-name session must read dead"
+  fi
+  if fm_backend_target_exists tmux "$DOTTED_SESSION:${DOTTED_SESSION_WINDOW%-fix}" 2>/dev/null; then
+    fail "a window name that is only a PREFIX inside a dotted-name session must read dead"
+  fi
+  if fm_backend_target_exists tmux "${DOTTED_SESSION%2}" 2>/dev/null; then
+    fail "a bare session name that is only a PREFIX of the dotted session must read dead"
+  fi
+  pass "real tmux: a dotted session name stays exact for absent sessions, windows, and prefixes"
 fi
 state=$(fm_backend_agent_state tmux "$TARGET")
 [ "$state" = missing ] \
@@ -168,6 +373,34 @@ state=$(fm_backend_agent_state tmux "$TARGET")
 # Best-effort contract: killing an already-gone window must not error.
 fm_backend_tmux_kill "$TARGET" || fail "fm_backend_tmux_kill on an already-dead target must stay best-effort (never fail)"
 pass "real tmux: kill removes the window and the readable session inventory authoritatively classifies it missing"
+
+# --- container_ensure agrees with the presence read -------------------------
+# The session-existence check that decides WHERE a task is written must resolve
+# names the same way the presence probe that READS it back does. A live
+# `firstmate-old` with no `firstmate` is the reachable disagreement: unanchored,
+# the probe succeeds by prefix, nothing is created, the window lands in
+# `firstmate-old`, and the recorded `firstmate:fm-<id>` then reads dead.
+
+tmux new-session -d -s firstmate-old -x 200 -y 50 \
+  || fail "could not create the prefix-colliding session"
+if tmux has-session -t "=firstmate" 2>/dev/null; then
+  fail "the fixture requires that no session is named exactly firstmate"
+fi
+
+ensured=$(unset TMUX; fm_backend_tmux_container_ensure) \
+  || fail "fm_backend_tmux_container_ensure failed"
+[ "$ensured" = firstmate ] || fail "container_ensure resolved to '$ensured', expected firstmate"
+tmux list-sessions -F '#{session_name}' | grep -qx firstmate \
+  || fail "container_ensure returned 'firstmate' without a session of exactly that name existing"
+
+ensured_window="fm-container-check"
+fm_backend_tmux_create_task "$ensured" "$ensured_window" "$HOME" \
+  || fail "could not create a task window in the ensured session"
+fm_backend_target_exists tmux "$ensured:$ensured_window" \
+  || fail "a task written to the ensured session must read alive through the presence probe"
+tmux list-windows -t "=firstmate" -F '#{window_name}' | grep -qx "$ensured_window" \
+  || fail "the task window was created in a prefix-matched session, not the ensured one"
+pass "real tmux: container_ensure and the presence probe agree on a prefix-colliding session name"
 
 cleanup_all
 trap - EXIT

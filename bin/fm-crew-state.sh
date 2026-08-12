@@ -149,7 +149,11 @@ BACKEND_TARGET=$(fm_backend_target_of_meta "$META")
 EXPECTED_LABEL="fm-$ID"
 pane_readable() {  # <target>
   case "$TASK_BACKEND" in
-    tmux) tmux display-message -p -t "$1" '#{pane_id}' >/dev/null 2>&1 ;;
+    # Delegated to the one shared presence primitive (fm_backend_target_exists
+    # in bin/fm-backend.sh) rather than re-derived here: the same probe lived
+    # inline in both places once, and the same wrong probe had to be fixed
+    # twice. Non-tmux backends keep the stronger capture-based read below.
+    tmux) fm_backend_target_exists tmux "$1" ;;
     *) fm_backend_capture "$TASK_BACKEND" "$1" 1 "$EXPECTED_LABEL" >/dev/null 2>&1 ;;
   esac
 }
@@ -537,7 +541,12 @@ fi
 # is no run to consult, so a dead/unreadable target means the crew is gone: report
 # unknown rather than trusting a possibly-stale status log as the current state.
 [ -n "$BACKEND_TARGET" ] || emit unknown none "no backend target recorded"
-pane_readable "$BACKEND_TARGET" || emit unknown none "backend target gone: $BACKEND_TARGET"
+# A worker placed on another host has no locally observable endpoint, so the
+# liveness gate below would report every healthy one gone. Its state comes from
+# the status log the remote worker keeps writing here.
+if ! fm_backend_is_remote_placement "$META"; then
+  pane_readable "$BACKEND_TARGET" || emit unknown none "backend target gone: $BACKEND_TARGET"
+fi
 
 # Secondmates idle on their own watcher (idle pane = healthy), so the busy
 # state is not meaningful for them; read their state from the status log only.

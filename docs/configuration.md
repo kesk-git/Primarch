@@ -103,6 +103,10 @@ Set `FM_SUPERVISOR_BACKEND=tmux|herdr` and `FM_SUPERVISOR_TARGET=<target>` to ov
 Without overrides, backend detection uses `$TMUX_PANE` first, then `HERDR_ENV=1` with `HERDR_PANE_ID`, then falls back to `tmux`.
 That keeps a tmux pane nested inside herdr on the tmux transport, matching the runtime backend's innermost-first rule.
 Target detection uses `FM_SUPERVISOR_TARGET`, then `$TMUX_PANE`, then `"${HERDR_SESSION:-default}:${HERDR_PANE_ID}"` under herdr, then the legacy `firstmate:0` tmux fallback with a warning.
+The daemon validates the resolved target at startup and refuses to run when it names no live pane, and a tmux target is matched exactly rather than through tmux's own prefix and glob resolution.
+Name the session and window in full: an abbreviated target that tmux itself would expand is refused at startup rather than injected into whichever pane tmux picked.
+A tmux target may be a pane id (`%N`), a window id (`@N`), `<session>:<window-name>`, `<session>:<window-index>` (the `firstmate:0` fallback), or `<session>:<window-name>.<pane-index>`; a window part beginning with `fm-` is read only as a task window name, never as `<window>.<pane>`.
+[`verification/runtime-backends.md`](verification/runtime-backends.md#endpoint-presence-check-fm_backend_target_exists) records the measurements behind that matching rule.
 Selecting any other supervisor backend, including `zellij`, `orca`, or `cmux`, refuses at daemon startup instead of trying tmux injection primitives against a non-tmux pane.
 
 ## Away-mode wedge alarm channels (config/wedge-alarm)
@@ -587,7 +591,7 @@ FM_SEND_SETTLE=1        # seconds fm-send waits after a successful text submit; 
 FM_PENDING_REPLY_GRACE_SECS=120   # seconds after marked-request delivery before a completed turn without a correlated parent report is eligible for its one recovery repost
 # sub-supervisor (bin/fm-supervise-daemon.sh); presence-gated via /afk
 FM_SUPERVISOR_BACKEND=             # optional supervisor pane backend override; tmux/herdr only, otherwise detects $TMUX_PANE then HERDR_ENV/HERDR_PANE_ID before tmux fallback
-FM_SUPERVISOR_TARGET=              # optional supervisor pane target override; tmux target or herdr <session>:<pane-id>, otherwise auto-detected
+FM_SUPERVISOR_TARGET=              # optional supervisor pane target override; exactly matched tmux target or herdr <session>:<pane-id>, otherwise auto-detected
 FM_INJECT_SKIP=heartbeat           # |-prefixes force-self-handled bypassing classification; empty disables
 FM_ESCALATE_BATCH_SECS=90          # buffer window for batched escalation digests; 0 = flush immediately
 FM_MAX_DEFER_SECS=300              # max buffered escalation age before retry plus wedge alarm; 0 disables

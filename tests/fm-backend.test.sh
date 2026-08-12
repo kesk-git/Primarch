@@ -110,9 +110,15 @@ resolve_permissive_tmux_kill_ref() {
   while IFS= read -r commit; do
     [ -n "$commit" ] || continue
     body=$(git -C "$ROOT" show "$commit:bin/backends/tmux.sh" 2>/dev/null) || continue
+    # Key the already-fixed skip on the anchoring CONTRACT, not on one spelling
+    # of it: the exact-selector call has been written inline as
+    # `-t "=$session:=$window"` and, since the shared helper landed, as
+    # `-t "$anchored"`. Matching only a deleted literal would let a future
+    # rename of that local make this walk return HEAD as the "permissive"
+    # fixture, and the old-vs-new diff would then compare HEAD against itself.
     # shellcheck disable=SC2016
     case "$body" in
-      *'tmux kill-window -t "=$session:=$window"'*) continue ;;
+      *'tmux kill-window -t "=$session:=$window"'*|*fm_backend_tmux_anchor_target*) continue ;;
     esac
     # shellcheck disable=SC2016
     case "$body" in
@@ -532,6 +538,129 @@ test_meta_get_and_backend_of_meta() {
   pass "fm_meta_get / fm_backend_of_meta: read key=value, default backend to tmux"
 }
 
+# Whether a worker is remote is decided by the meta's `remote_host`, never by
+# its recorded window string. A remotely placed secondmate records
+# `window=remote:<id>`, but so does an ordinary LOCAL task whose ambient tmux
+# session happens to be named `remote` (fm_backend_tmux_container_ensure returns
+# `#S` verbatim), and that task's windows must still be probed for real.
+test_remote_placement_is_keyed_on_remote_host_not_the_window_string() {
+  local dir remote_meta local_meta
+  dir=$TMP_ROOT/remote-placement; mkdir -p "$dir"
+
+  remote_meta=$dir/ios.meta
+  fm_write_meta "$remote_meta" "window=remote:ios" "remote_host=buildbox" "kind=secondmate"
+  [ "$(fm_backend_of_meta "$remote_meta")" = tmux ] \
+    || fail "the fixture must reproduce the real shape: no backend= key, defaulted to tmux"
+  fm_backend_is_remote_placement "$remote_meta" \
+    || fail "a meta recording remote_host= is a remote placement"
+
+  # Identical window string, no remote_host: a local task in a session named
+  # `remote`. Treating this as remote would report every crashed window in that
+  # session alive - the dead-reads-alive class this primitive exists to catch.
+  local_meta=$dir/local-in-remote-session.meta
+  fm_write_meta "$local_meta" "window=remote:fm-x1" "kind=ship"
+  if fm_backend_is_remote_placement "$local_meta"; then
+    fail "a local task whose session is named 'remote' must not be taken for a remote placement"
+  fi
+
+  pass "fm_backend_is_remote_placement: keyed on remote_host=, not on a remote: window string"
+}
+
+# The shared presence primitive has no placement opinion at all: it probes
+# whatever target it is handed. A local task in a tmux session named `remote`
+# must read dead when its window is gone, exactly like any other local task.
+test_target_exists_probes_a_local_session_named_remote() {
+  local dir fakebin log
+  dir=$TMP_ROOT/session-named-remote; fakebin="$dir/fakebin"; log="$dir/tmux.log"
+  mkdir -p "$fakebin"
+  # A live session named `remote` holding exactly one window, `fm-live`.
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
+case "${1:-}" in
+  list-windows)
+    case "$*" in
+      *'=remote:'*) printf 'fm-live\n0\n@0\n'; exit 0 ;;
+    esac
+    exit 1 ;;
+esac
+exit 1
+SH
+  chmod +x "$fakebin/tmux"
+
+  : > "$log"
+  if PATH="$fakebin:$PATH" FM_FAKE_TMUX_LOG="$log" \
+    fm_backend_target_exists tmux "remote:fm-dead" "fm-dead"; then
+    fail "a gone window in a local session named 'remote' must read dead"
+  fi
+  grep -q 'list-windows' "$log" \
+    || fail "a remote:-shaped target must still be probed"$'\n'"$(cat "$log")"
+
+  : > "$log"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_LOG="$log" \
+    fm_backend_target_exists tmux "remote:fm-live" "fm-live" \
+    || fail "a live window in a local session named 'remote' must read alive"
+
+  pass "fm_backend_target_exists: a local session named 'remote' is probed, not exempted"
+}
+
+# Pure string contract, so it is asserted directly rather than through a live
+# server; the rc values each case encodes are measured against real tmux 3.7b in
+# docs/verification/runtime-backends.md and exercised end to end by
+# tests/fm-backend-tmux-smoke.test.sh.
+test_tmux_anchor_target_shapes() {
+  local out
+  out=$(fm_backend_tmux_anchor_target "firstmate:fm-x") \
+    || fail "a session:window target must anchor"
+  [ "$out" = "=firstmate:=fm-x" ] || fail "session:window anchored to '$out'"
+
+  out=$(fm_backend_tmux_anchor_target "firstmate:0") \
+    || fail "a session:index target must anchor"
+  [ "$out" = "=firstmate:=0" ] || fail "session:index anchored to '$out'"
+
+  out=$(fm_backend_tmux_anchor_target "revsess") \
+    || fail "a bare session name must anchor - tmux prefix-resolves it otherwise"
+  [ "$out" = "=revsess" ] || fail "bare session name anchored to '$out'"
+
+  # `=%0` and `=@0` do not resolve the pane and window they name.
+  out=$(fm_backend_tmux_anchor_target "%3") || fail "a pane id must be accepted"
+  [ "$out" = "%3" ] || fail "pane id must stay unanchored, got '$out'"
+  out=$(fm_backend_tmux_anchor_target "@3") || fail "a window id must be accepted"
+  [ "$out" = "@3" ] || fail "window id must stay unanchored, got '$out'"
+
+  # Each of these reads ALIVE if it reaches tmux, so it must never get there.
+  fm_backend_tmux_anchor_target "" 2>/dev/null && fail "an empty target must be refused"
+  fm_backend_tmux_anchor_target ":fm-x" 2>/dev/null && fail "an empty session part must be refused"
+  fm_backend_tmux_anchor_target "firstmate:" 2>/dev/null && fail "an empty window part must be refused"
+  fm_backend_tmux_anchor_target "a:b:c" 2>/dev/null && fail "a multi-colon target must be refused"
+
+  pass "fm_backend_tmux_anchor_target: anchors names, passes ids through, refuses empty and malformed"
+}
+
+# The empty/malformed refusal must hold at the probe boundary too: an empty
+# target handed to tmux has-session reads ALIVE against any live server.
+test_target_exists_refuses_empty_and_malformed_tmux_targets() {
+  local dir fakebin log t
+  dir=$TMP_ROOT/tmux-malformed; fakebin="$dir/fakebin"; log="$dir/tmux.log"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+
+  for t in "" ":fm-x" "firstmate:" "a:b:c"; do
+    : > "$log"
+    if PATH="$fakebin:$PATH" FM_FAKE_TMUX_LOG="$log" fm_backend_target_exists tmux "$t"; then
+      fail "target '$t' must not read alive (the fake tmux says yes to everything)"
+    fi
+    [ ! -s "$log" ] || fail "target '$t' must be refused before tmux runs"$'\n'"$(cat "$log")"
+  done
+
+  pass "fm_backend_target_exists: empty and malformed tmux targets are refused before tmux runs"
+}
+
 test_resolve_selector_three_forms() {
   local state=$TMP_ROOT/resolve-state fakebin out
   mkdir -p "$state"
@@ -649,7 +778,11 @@ case "${1:-}" in
       printf '╭────╮\n│    │\n╰────╯\n'
     fi
     exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows)
+    # The endpoint-presence read resolves this fixture's `sess:win` target by
+    # listing the session's windows, so name that window part here.
+    printf 'win\n0\n@0\n'
+    exit 0 ;;
 esac
 exit 0
 SH
@@ -911,6 +1044,13 @@ make_teardown_fakebin() {  # <dir> -> echoes fakebin dir; logs tmux+treehouse ca
 #!/usr/bin/env bash
 set -u
 { printf 'tmux'; for a in "$@"; do printf '\x1f%s' "$a"; done; printf '\n'; } >> "${FM_TMUX_LOG:?}"
+# The refactored kill resolves its window from the session's real inventory and
+# kills the resolved id, so the fake has to own a window for that to find.
+if [ "${1:-}" = list-windows ]; then
+  for w in ${FM_FAKE_TMUX_WINDOWS:-}; do
+    printf '@1 %s\n@1 1\n@1 @1\n' "$w"
+  done
+fi
 exit 0
 SH
   cat > "$fb/treehouse" <<'SH'
@@ -934,7 +1074,7 @@ run_teardown_case() {
   : > "$log"
   env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$fmroot" \
     FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
-    FM_TMUX_LOG="$log" \
+    FM_TMUX_LOG="$log" FM_FAKE_TMUX_WINDOWS="fm-$id" \
     "$script" "$id"
 }
 
@@ -993,8 +1133,17 @@ test_teardown_conformance_old_vs_new() {
   # exact-selector contract belongs to the current script, asserted below.
   assert_contains "$(tr -d '=' < "$log_old")" "tmux"$'\x1f''kill-window'$'\x1f''-t'$'\x1f'"firstmate:fm-$id" \
     "legacy teardown fixture did not exercise tmux window cleanup for the task"
-  assert_contains "$(cat "$log_new")" "tmux"$'\x1f''kill-window'$'\x1f''-t'$'\x1f'"=firstmate:=fm-$id" \
-    "teardown did not call tmux kill-window with exact session and window selectors"
+  # The current script resolves the window from the session's real inventory and
+  # kills the resolved id. Handing tmux the composed `=session:=window` name was
+  # destructive: tmux reads a `.` in the window part as a pane separator, so a
+  # target naming no window at all resolved to a DIFFERENT live window and
+  # killed it (see tests/fm-backend-tmux-smoke.test.sh).
+  assert_contains "$(cat "$log_new")" "tmux"$'\x1f''list-windows'$'\x1f''-t'$'\x1f'"=firstmate:" \
+    "teardown did not resolve the task window from the session inventory"
+  assert_contains "$(cat "$log_new")" "tmux"$'\x1f''kill-window'$'\x1f''-t'$'\x1f''@1' \
+    "teardown did not call tmux kill-window on the resolved window id"
+  assert_not_contains "$(cat "$log_new")" "tmux"$'\x1f''kill-window'$'\x1f''-t'$'\x1f'"=firstmate:=fm-$id" \
+    "teardown must not kill by a composed session:window name"
 
   pass "fm-teardown.sh: treehouse return remains compatible while tmux cleanup uses exact selectors"
 }
@@ -1128,6 +1277,10 @@ test_backend_validate_refuses_unknown
 test_backend_source_shell_portable
 test_backend_validate_spawn_accepts_orca
 test_meta_get_and_backend_of_meta
+test_remote_placement_is_keyed_on_remote_host_not_the_window_string
+test_target_exists_probes_a_local_session_named_remote
+test_tmux_anchor_target_shapes
+test_target_exists_refuses_empty_and_malformed_tmux_targets
 test_resolve_selector_three_forms
 test_backend_of_selector_matches_explicit_target_meta
 test_send_tmux_contract

@@ -109,6 +109,10 @@
   ],
   "surfaces": [
     {
+      "path": ".agents/notes/fm-dead-endpoint-reads-alive.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": ".agents/skills/afk/SKILL.md",
       "audience": "agent-runtime"
     },
