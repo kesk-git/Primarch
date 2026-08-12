@@ -7,6 +7,10 @@ set -u
 
 # shellcheck source=tests/wake-helpers.sh
 . "$(dirname "${BASH_SOURCE[0]}")/wake-helpers.sh"
+# The two "must not spin forever" cases below assert a bound, which needs the
+# repo's one bounded-execution owner rather than a hand-rolled watchdog.
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$ROOT/bin/fm-timeout-lib.sh"
 
 WATCH="$ROOT/bin/fm-watch.sh"
 WATCH_ARM="$ROOT/bin/fm-watch-arm.sh"
@@ -20,6 +24,18 @@ mark_pr_check_migration_complete() {
   printf '%s\n' fm-pr-check-migration-scan-v1 > "$state/.pr-check-migration-scan-v1"
   printf '%s\n' fm-pr-check-migration-v1 > "$state/.pr-check-migration-v1"
   chmod 0600 "$state/.pr-check-migration-scan-v1" "$state/.pr-check-migration-v1"
+}
+
+# Run the blocking lock acquisition in a child scoped to <state>, under a hard
+# bound. Exit 124 means it never returned, which is the whole question these
+# cases ask; any other status is its real verdict.
+acquire_wait_bounded() {  # <seconds> <state> <lock>
+  local seconds=$1 state=$2 lock=$3
+  # shellcheck disable=SC2016 # Positional parameters expand inside the child bash, not here.
+  fm_run_timed "$seconds" env FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2"
+  ' _ "$LIB" "$lock" >/dev/null 2>&1
 }
 
 drain_and_ack() {  # <state>
@@ -89,15 +105,60 @@ test_stale_watch_lock_reclaimed() {
     live=0
     is_live_non_zombie "$pid" && live=1
     lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
-    [ "$live" -eq 1 ] && [ "$lock_pid" != "$dead_pid" ] && break
+    # Wait for a REAL successor pid. Mid-reclaim the lock briefly has no pid at
+    # all, and an empty read is trivially "not the dead pid": breaking on it
+    # would satisfy the assertion below while proving nothing, and would leave
+    # the watcher torn down mid-acquisition rather than after it reclaimed.
+    [ "$live" -eq 1 ] && [ -n "$lock_pid" ] && [ "$lock_pid" != "$dead_pid" ] && break
     sleep 0.1
     i=$((i + 1))
   done
   [ "$live" -eq 1 ] || fail "watcher did not reclaim stale lock and stay alive"
+  [ -n "$lock_pid" ] || fail "stale watch lock was cleared without a successor pid"
   [ "$lock_pid" != "$dead_pid" ] || fail "stale watch lock pid was not replaced"
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
   pass "killed watcher stale lock is reclaimed"
+}
+
+test_lock_root_removed_mid_acquire_fails_instead_of_spinning() {
+  # A lock whose own directory is gone can never be taken: no owner directory
+  # can be created there, so there is no holder to displace and nothing to wait
+  # for. Acquisition used to read that create failure as "a stale holder is in
+  # the way", descend into the "<lock>.steal" mutex, fail there for the same
+  # reason, and descend again - appending ".steal" to the path forever while the
+  # surrounding wait retried it. The adversarial half matters just as much: an
+  # ordinary LIVE holder must still be waited out, not reported as unusable.
+  local dir state gone rc live
+  dir=$(make_case lock-root-removed)
+  state="$dir/state"
+  gone="$dir/removed-root"
+  mkdir -p "$gone"
+  rmdir "$gone"
+
+  rc=0
+  acquire_wait_bounded 30 "$state" "$gone/.watcher-down.lock" || rc=$?
+  [ "$rc" -ne 124 ] || fail "acquisition never returned for a removed lock root"
+  [ "$rc" -ne 0 ] || fail "acquisition reported success for a lock it cannot hold"
+  [ ! -e "$gone" ] || fail "acquisition recreated the removed lock root"
+
+  # Adversarial: a live holder is ordinary contention, so the wait must keep
+  # waiting rather than inherit the unusable-root bail-out...
+  sleep 300 &
+  live=$!
+  mkdir "$state/.contend.lock"
+  printf '%s\n' "$live" > "$state/.contend.lock/pid"
+  rc=0
+  acquire_wait_bounded 3 "$state" "$state/.contend.lock" || rc=$?
+  [ "$rc" -eq 124 ] || fail "wait abandoned a live-held lock instead of waiting (rc=$rc)"
+
+  # ...and must still succeed once that holder is gone.
+  kill "$live" 2>/dev/null || true
+  wait "$live" 2>/dev/null || true
+  rc=0
+  acquire_wait_bounded 30 "$state" "$state/.contend.lock" || rc=$?
+  [ "$rc" -eq 0 ] || fail "wait could not take the lock after its holder died (rc=$rc)"
+  pass "acquisition fails on a removed lock root and still waits out a live holder"
 }
 
 test_live_stale_watch_lock_is_actionable() {
@@ -902,6 +963,57 @@ SH
   pass "cycle-exit ledger links a verified successor and remains size-capped"
 }
 
+test_watcher_whose_state_dir_disappears_exits_instead_of_spinning() {
+  # End-to-end shape of the CI wedge. A watcher still inside its startup lock
+  # acquisition, whose state directory is then removed under it, must exit. A
+  # watcher that instead spins there keeps the stderr it inherited from whatever
+  # started it, so that process's output pipe never closes - which is how this
+  # presented: the test file finished, and the runner reading its output never
+  # saw the end of it.
+  #
+  # The interleaving is forced, not waited for. Holding the recovery marker's
+  # lock with a live process parks the watcher inside that acquisition for as
+  # long as the fixture wants, and the steal mutex appearing is the exact signal
+  # that it has arrived there.
+  local dir state fakebin out holder pid i status
+  dir=$(make_case state-dir-removed)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  mark_pr_check_migration_complete "$state"
+
+  # A live holder of the recovery marker's lock: reached only from inside the
+  # stale-lock reclaim, so the watcher parks there instead of racing past.
+  sleep 300 &
+  holder=$!
+  mkdir "$state/.watcher-down.lock"
+  printf '%s\n' "$holder" > "$state/.watcher-down.lock/pid"
+  mkdir "$state/.watch.lock"
+  printf '%s\n' "$(dead_pid)" > "$state/.watch.lock/pid"
+
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2>&1 &
+  pid=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -e "$state/.watch.lock.steal" ] && [ ! -L "$state/.watch.lock.steal" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if [ ! -e "$state/.watch.lock.steal" ] && [ ! -L "$state/.watch.lock.steal" ]; then
+    fail "watcher did not park inside the stale-lock reclaim: $(cat "$out")"
+  fi
+  # Adversarial: while the state directory is intact this is ordinary
+  # contention, so the watcher must still be waiting rather than bailing out.
+  is_live_non_zombie "$pid" || fail "watcher abandoned a live-held marker lock instead of waiting"
+
+  rm -rf "$state"
+  wait_for_exit "$pid" 300
+  status=$?
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  [ "$status" -ne 124 ] || fail "watcher kept running after its state directory was removed"
+  pass "watcher whose state directory disappears exits instead of spinning"
+}
+
 test_stopped_watcher_is_live_but_stale_then_exit_is_classified() {
   local dir state fakebin armout armpid watcher_pid i status
   dir=$(make_case stopped-watcher)
@@ -1098,32 +1210,37 @@ test_msys_pid_identity_uses_proc() {
   pass "MSYS process identity uses compatible /proc fields"
 }
 
-test_singleton_start
-test_pid_identity_is_locale_invariant
-test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
-test_msys_pid_identity_uses_proc
-test_stale_watch_lock_reclaimed
-test_stale_watch_reclaim_publishes_before_clear
-test_live_stale_watch_lock_is_actionable
-test_guard_warnings
-test_lock_single_winner_under_concurrency
-test_lock_steals_dead_pid_lock
-test_lock_stale_steal_single_winner_under_concurrency
-test_lock_live_steal_mutex_is_not_reclaimed
-test_lock_does_not_steal_live_lock
-test_lock_empty_pid_uses_minimum_grace
-test_lock_late_claim_loses_after_recreate
-test_lock_paused_mid_acquire_claim_fails_during_steal
-test_watch_restart_rejects_reused_pid
-test_watch_restart_attaches_to_healthy_peer
-test_watcher_self_evicts_on_lock_takeover
-test_arm_self_eviction_is_loud_without_successor
-test_arm_attaches_and_waits_for_live_fresh_watcher
-test_attached_arm_signal_is_recorded_in_cycle_ledger
-test_arm_starts_and_self_heals
-test_arm_hup_cleans_child_and_temp_output
-test_arm_propagates_immediate_wake_before_confirmation
-test_arm_waits_for_peer_beacon_after_child_stands_down
-test_arm_fails_loud_when_no_fresh_watcher_confirmable
-test_cycle_exit_ledger_links_successor_and_stays_bounded
-test_stopped_watcher_is_live_but_stale_then_exit_is_classified
+# Every case runs under the shared per-case bound (tests/lib.sh), so a case that
+# wedges names itself instead of consuming the whole CI job in silence.
+fm_test_run_cases \
+  test_singleton_start \
+  test_pid_identity_is_locale_invariant \
+  test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse \
+  test_msys_pid_identity_uses_proc \
+  test_stale_watch_lock_reclaimed \
+  test_stale_watch_reclaim_publishes_before_clear \
+  test_lock_root_removed_mid_acquire_fails_instead_of_spinning \
+  test_live_stale_watch_lock_is_actionable \
+  test_guard_warnings \
+  test_lock_single_winner_under_concurrency \
+  test_lock_steals_dead_pid_lock \
+  test_lock_stale_steal_single_winner_under_concurrency \
+  test_lock_live_steal_mutex_is_not_reclaimed \
+  test_lock_does_not_steal_live_lock \
+  test_lock_empty_pid_uses_minimum_grace \
+  test_lock_late_claim_loses_after_recreate \
+  test_lock_paused_mid_acquire_claim_fails_during_steal \
+  test_watch_restart_rejects_reused_pid \
+  test_watch_restart_attaches_to_healthy_peer \
+  test_watcher_self_evicts_on_lock_takeover \
+  test_arm_self_eviction_is_loud_without_successor \
+  test_arm_attaches_and_waits_for_live_fresh_watcher \
+  test_attached_arm_signal_is_recorded_in_cycle_ledger \
+  test_arm_starts_and_self_heals \
+  test_arm_hup_cleans_child_and_temp_output \
+  test_arm_propagates_immediate_wake_before_confirmation \
+  test_arm_waits_for_peer_beacon_after_child_stands_down \
+  test_arm_fails_loud_when_no_fresh_watcher_confirmable \
+  test_cycle_exit_ledger_links_successor_and_stays_bounded \
+  test_watcher_whose_state_dir_disappears_exits_instead_of_spinning \
+  test_stopped_watcher_is_live_but_stale_then_exit_is_classified
