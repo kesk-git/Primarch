@@ -329,6 +329,11 @@ The ambiguity runs in both directions and applies to the session part as well as
 It resolves the two parts separately against real state: the session part anchored AND suffixed with `:` so tmux parses it as a session (`list-windows -t "=<session>:"`), then the window part as a literal whole-line `grep -Fqx` over that session's `#{window_name}`, `#{window_index}`, and `#{window_id}` - the same list-real-state-and-filter shape the recovery-grade `fm_backend_tmux_agent_state` uses and that this table records for the zellij and cmux arms.
 Exactness is preserved in every part: measured on the same server, `fm-v1` and `fm-v1.2` miss while `fm-v1.2-fix` hits, a prefix session part fails the `list-windows` call outright, and window indexes and ids still hit (`0` and `@0`), so the supervisor's `firstmate:0` default is unaffected.
 A bare session-name target takes the same trailing-colon form (`has-session -t "=<name>:"`), which is exact and dot-safe: `=my.sess:` succeeds while `=my:` and `=nosuch.x:` both fail.
+
+Whether a session name may contain a `.` at all is itself tmux-version-scoped, established on 2026-08-12.
+tmux 3.2 through at least 3.5a rewrite every `.` and `:` in a new session name to `_` (`session_check_name` in upstream `session.c`, read at tags 3.4 and 3.5a), so on those versions a dotted session name cannot exist and the dot-safe session handling above is unreachable rather than unnecessary.
+tmux 3.6 and later keep the requested name verbatim and refuse a name they will not accept, which is where the `my.sess` measurements above come from (tmux 3.7b on macOS).
+`tests/fm-backend-tmux-smoke.test.sh` therefore reads the created name back from `new-session -d -P -F '#{session_name}'` and skips only the dotted-session case, naming the tmux version, when this tmux rewrote the dot; the portable CI runner's tmux 3.4 is such a version.
 Bare pane ids (`%N`) and window ids (`@N`) are already exact and unambiguous, so they stay on a plain `has-session`; anchoring them makes them fail.
 
 A window part that resolves to no real window is re-read once as a `<window>.<pane-index>` spec, confirmed with `list-panes` against the resolved base window's `@id`.

@@ -329,30 +329,44 @@ pass "real tmux: fm_backend_target_exists reports a wholly nonexistent session d
 # `#S` whenever firstmate runs inside tmux. The session part has the same
 # pane-separator ambiguity as the window part, so it must be resolved as a
 # session rather than handed to tmux as a bare target name.
+#
+# Whether a session name may contain a `.` at all is a tmux-version property:
+# tmux 3.2 through at least 3.5a rewrite every `.` and `:` in a new session name
+# to `_` (session_check_name in session.c), while tmux 3.6+ keeps the name
+# verbatim (measured: tmux 3.7b creates and lists `smoke.v2` unchanged). The
+# created name is therefore read back from tmux itself rather than assumed, and
+# the case is skipped - loudly, naming the version - where this tmux makes a
+# dotted session name unrepresentable, since no fleet running on it can reach
+# the shape these assertions pin.
 DOTTED_SESSION="smoke.v2"
 DOTTED_SESSION_WINDOW="fm-v2.1-fix"
-tmux new-session -d -s "$DOTTED_SESSION" -n "$DOTTED_SESSION_WINDOW" -x 200 -y 50 \
+created_session=$(tmux new-session -d -P -F '#{session_name}' \
+  -s "$DOTTED_SESSION" -n "$DOTTED_SESSION_WINDOW" -x 200 -y 50) \
   || fail "could not create the dotted-name session"
 
-fm_backend_target_exists tmux "$DOTTED_SESSION:$DOTTED_SESSION_WINDOW" \
-  || fail "a LIVE window in a session whose NAME contains a dot must read alive"
-fm_backend_target_exists tmux "$DOTTED_SESSION" \
-  || fail "a live session whose name contains a dot must read alive as a bare target"
-pass "real tmux: a dotted session name resolves, bare and qualified"
+if [ "$created_session" != "$DOTTED_SESSION" ]; then
+  echo "skip: this tmux ($(tmux -V)) rewrites '.' out of session names (asked for '$DOTTED_SESSION', got '$created_session'); a dotted session name is unreachable here"
+else
+  fm_backend_target_exists tmux "$DOTTED_SESSION:$DOTTED_SESSION_WINDOW" \
+    || fail "a LIVE window in a session whose NAME contains a dot must read alive"
+  fm_backend_target_exists tmux "$DOTTED_SESSION" \
+    || fail "a live session whose name contains a dot must read alive as a bare target"
+  pass "real tmux: a dotted session name resolves, bare and qualified"
 
-if fm_backend_target_exists tmux "$DOTTED_SESSION:fm-gone" 2>/dev/null; then
-  fail "an absent window in a dotted-name session must read dead"
+  if fm_backend_target_exists tmux "$DOTTED_SESSION:fm-gone" 2>/dev/null; then
+    fail "an absent window in a dotted-name session must read dead"
+  fi
+  if fm_backend_target_exists tmux "smoke.v9:$DOTTED_SESSION_WINDOW" 2>/dev/null; then
+    fail "a window in an absent dotted-name session must read dead"
+  fi
+  if fm_backend_target_exists tmux "$DOTTED_SESSION:${DOTTED_SESSION_WINDOW%-fix}" 2>/dev/null; then
+    fail "a window name that is only a PREFIX inside a dotted-name session must read dead"
+  fi
+  if fm_backend_target_exists tmux "${DOTTED_SESSION%2}" 2>/dev/null; then
+    fail "a bare session name that is only a PREFIX of the dotted session must read dead"
+  fi
+  pass "real tmux: a dotted session name stays exact for absent sessions, windows, and prefixes"
 fi
-if fm_backend_target_exists tmux "smoke.v9:$DOTTED_SESSION_WINDOW" 2>/dev/null; then
-  fail "a window in an absent dotted-name session must read dead"
-fi
-if fm_backend_target_exists tmux "$DOTTED_SESSION:${DOTTED_SESSION_WINDOW%-fix}" 2>/dev/null; then
-  fail "a window name that is only a PREFIX inside a dotted-name session must read dead"
-fi
-if fm_backend_target_exists tmux "${DOTTED_SESSION%2}" 2>/dev/null; then
-  fail "a bare session name that is only a PREFIX of the dotted session must read dead"
-fi
-pass "real tmux: a dotted session name stays exact for absent sessions, windows, and prefixes"
 state=$(fm_backend_agent_state tmux "$TARGET")
 [ "$state" = missing ] \
   || fail "a real missing window in a readable session should classify as missing, got '$state'"
