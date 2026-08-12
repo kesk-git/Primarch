@@ -23,6 +23,7 @@ LINUX_FAIL_HOLDER_PID=
 LINUX_WAIT_STATE=
 LINUX_WAIT_HOLDER_PID=
 LINUX_WAIT_RELEASE_PID=
+LEFTOVER_STATE=
 CREATED_LOCK_PID=
 mkdir -p "$REMOTE_ROOT/bin" "$REMOTE_HOME" "$ACCOUNT_HOME" "$RUNTIME_BIN"
 # worker.pid records the serving child, not its restart supervisor, so stopping
@@ -37,7 +38,7 @@ cleanup_remote_job_fixture() {
   if [ -f "$STATE_ROOT/worker.pid" ]; then
     fm_remote_job_stop_worker_tree "$(cat "$STATE_ROOT/worker.pid")" || true
   fi
-  for linux_wait_state in "$LINUX_FAIL_STATE" "$LINUX_WAIT_STATE"; do
+  for linux_wait_state in "$LINUX_FAIL_STATE" "$LINUX_WAIT_STATE" "$LEFTOVER_STATE"; do
     [ -n "$linux_wait_state" ] && [ -f "$linux_wait_state/worker.pid" ] || continue
     fm_remote_job_stop_worker_tree "$(cat "$linux_wait_state/worker.pid")" || true
   done
@@ -723,6 +724,54 @@ assert_present "$LINUX_WAIT_STATE/worker.ready" "the replacement worker did not 
 fm_remote_job_worker_identity_matches "$REMOTE_ROOT" "$LINUX_WAIT_HOME" \
   || fail "the replacement worker did not publish the current code identity"
 pass "a Linux worker replacement waits past the old one-retry budget and succeeds once the prior lock releases"
+
+# --- reclaiming a lock a killed publish left staged files inside -------------
+#
+# Ownership files are not all a lost owner can leave in worker.lock. A worker
+# killed between staging its ownership files and renaming them - the shape the
+# replacement path's TERM-then-KILL escalation produces - leaves a staged
+# temporary behind. Reclaiming an abandoned lock removed only pid, start, and
+# command, so the directory could never be removed: every later worker failed
+# to acquire ownership, no worker could ever report ready again for that
+# account, and no startup bound could help, because waiting is not what the
+# state needed. This stands that leftover in deterministically - the recorded
+# owner is a process that has already exited and been reaped, and the lock
+# carries an old mtime, so the lock is unambiguously abandoned rather than
+# merely quiet - and requires ensure to converge anyway.
+LEFTOVER_HOME="$TMP_ROOT/leftover-account"
+LEFTOVER_STATE="$TMP_ROOT/leftover-jobs"
+mkdir -p "$LEFTOVER_HOME" "$LEFTOVER_STATE/jobs" "$LEFTOVER_STATE/logs"
+chmod 700 "$LEFTOVER_HOME" "$LEFTOVER_STATE"
+FM_REMOTE_JOB_STATE_ROOT="$LEFTOVER_STATE"
+FM_REMOTE_JOB_LINUX_STARTUP_WAIT_SECONDS=30
+sleep 300 &
+ABANDONED_PID=$!
+ABANDONED_START=$(fm_remote_job_process_start "$ABANDONED_PID") \
+  || fail "the abandoned-lock fixture process could not be inspected"
+ABANDONED_COMMAND=$(fm_remote_job_process_command "$ABANDONED_PID") \
+  || fail "the abandoned-lock fixture process could not be inspected"
+# Killed and reaped here, so the recorded owner is gone before the lock is
+# staged rather than racing the process's own exit.
+kill "$ABANDONED_PID" 2>/dev/null || true
+wait "$ABANDONED_PID" 2>/dev/null || true
+mkdir "$LEFTOVER_STATE/worker.lock" || fail "a worker lock already held $LEFTOVER_STATE before the fixture could take it"
+chmod 700 "$LEFTOVER_STATE/worker.lock"
+printf '%s\n' "$ABANDONED_PID" > "$LEFTOVER_STATE/worker.lock/pid"
+printf '%s\n' "$ABANDONED_START" > "$LEFTOVER_STATE/worker.lock/start"
+printf '%s\n' "$ABANDONED_COMMAND" > "$LEFTOVER_STATE/worker.lock/command"
+LEFTOVER_STAGED="$LEFTOVER_STATE/worker.lock/.pid.9Xq4Tz"
+printf '%s\n' "$ABANDONED_PID" > "$LEFTOVER_STAGED"
+chmod 600 "$LEFTOVER_STATE/worker.lock"/pid "$LEFTOVER_STATE/worker.lock"/start \
+  "$LEFTOVER_STATE/worker.lock"/command "$LEFTOVER_STAGED"
+touch -t 200001010000 "$LEFTOVER_STATE/worker.lock"
+fm_remote_job_ensure_worker "$REMOTE_ROOT" "$LEFTOVER_HOME" || fail "$FM_REMOTE_JOB_ERROR"
+assert_present "$LEFTOVER_STATE/worker.ready" "no worker reported ready after the abandoned lock was reclaimed"
+assert_absent "$LEFTOVER_STAGED" "reclaiming the abandoned lock kept the staged file that blocked its removal"
+fm_remote_job_worker_identity_matches "$REMOTE_ROOT" "$LEFTOVER_HOME" \
+  || fail "the replacement worker did not publish the current code identity"
+fm_remote_job_lock_owner_matches_process "$LEFTOVER_HOME" \
+  || fail "the reclaimed lock does not record the live replacement worker as its owner"
+pass "an abandoned worker lock is reclaimed even when a killed publish left a staged file inside it"
 
 FM_REMOTE_JOB_STATE_ROOT="$STATE_ROOT"
 FM_REMOTE_JOB_LINUX_STARTUP_WAIT_SECONDS=90
