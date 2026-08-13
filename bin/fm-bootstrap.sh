@@ -1092,6 +1092,7 @@ crew_dispatch_validate() {
 # itself. A healthy registry stays silent.
 project_registry_lint() {
   local reg="$DATA/projects.md" line name warn
+  [ -x "$FM_ROOT/bin/fm-project-mode.sh" ] || return 0
   [ -f "$reg" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
@@ -1101,7 +1102,10 @@ project_registry_lint() {
     name=$(printf '%s\n' "$line" | awk '{print $2}')
     [ -n "$name" ] || continue
     warn=$(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$FM_ROOT/bin/fm-project-mode.sh" --raw "$name" 2>&1 >/dev/null || true)
-    [ -n "$warn" ] || continue
+    case "$warn" in
+      *'unknown mode'*) ;;
+      *) continue ;;
+    esac
     echo "PROJECT_REGISTRY: $name: $(printf '%s' "$warn" | tr '\n' ' ' | sed 's/[[:space:]]*$//') - line: \"$line\" - expected: - $name [<mode> +yolo] - <desc> (added <date>)"
   done < "$reg"
 }

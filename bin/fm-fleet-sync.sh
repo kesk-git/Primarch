@@ -13,10 +13,12 @@
 # stashed, or discarded.
 # Still skips (benignly) local-only/no-origin projects, missing remotes/branches,
 # and fetch failures.
-# Reports an unparseable or unknown registry line for the synced project as a
-# loud "$label: registry-invalid: ..." line (bin/fm-project-mode.sh owns the exact
-# warning text and registry format) rather than silently accepting its fallback
-# default; sync itself still proceeds under that default.
+# Reports a present-but-unparseable registry line for the synced project (the
+# "unknown mode" fault) as a loud "$label: registry-invalid: ..." line
+# (bin/fm-project-mode.sh owns the exact warning text and registry format) rather
+# than silently accepting its fallback default; sync itself still proceeds under
+# that default. An absent data/projects.md and a cloned-but-unregistered project
+# are normal states, not faults, so both stay silent.
 # Pruning never deletes the checked-out branch or a branch that still has a
 # worktree, so it cannot discard unlanded work; set FM_FLEET_PRUNE=0 to disable it.
 # When the fetch fails on an orphaned .git/packed-refs.lock (left by a ref rewrite
@@ -310,9 +312,11 @@ sync_project() {
   fi
   mode_line=$("$FM_ROOT/bin/fm-project-mode.sh" "$label" 2>/dev/null || echo "no-mistakes off")
   mode_warn=$("$FM_ROOT/bin/fm-project-mode.sh" "$label" 2>&1 >/dev/null || true)
-  if [ -n "$mode_warn" ]; then
-    echo "$label: registry-invalid: $(first_line "$mode_warn") - expected: - $label [<mode> +yolo] - <desc> (added <date>)"
-  fi
+  case "$mode_warn" in
+    *'unknown mode'*)
+      echo "$label: registry-invalid: $(first_line "$mode_warn") - expected: - $label [<mode> +yolo] - <desc> (added <date>)"
+      ;;
+  esac
   mode=${mode_line%% *}
   if [ "$mode" = "local-only" ]; then
     echo "$label: skipped: local-only project"

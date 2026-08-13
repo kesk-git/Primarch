@@ -29,15 +29,18 @@ set -u
 fm_git_identity fmtest fmtest@example.invalid
 
 TMP_ROOT=$(fm_test_tmproot fm-fleet-sync-tests)
-HOME_N=0
 
 # --- fixtures ---------------------------------------------------------------
 
 # new_home: fresh isolated FM_HOME with an empty projects/ dir. Each test gets its
-# own so the whole-fleet form never sees another test's clones.
+# own so the whole-fleet form never sees another test's clones and no test
+# inherits another's data/projects.md. The uniqueness must come from mktemp, not
+# an in-process counter: the call site is `home=$(new_home)`, whose subshell
+# discards any variable this function sets (the same boundary fm_test_tmproot
+# documents in tests/lib.sh).
 new_home() {
-  HOME_N=$((HOME_N + 1))
-  local h="$TMP_ROOT/home-$HOME_N"
+  local h
+  h=$(mktemp -d "$TMP_ROOT/home-XXXXXX") || return 1
   mkdir -p "$h/projects"
   printf '%s\n' "$h"
 }
@@ -408,6 +411,43 @@ test_healthy_registry_line_stays_quiet() {
   pass "a well-formed registry line produces no registry-invalid report"
 }
 
+# A home with clones but no data/projects.md is a documented-normal state (the
+# registry is rebuilt from the clones under projects/), so fm-project-mode.sh's
+# "no registry" warning is not a registry fault. Reporting it would fire once per
+# cloned project at every session start, which trains the alarm to be ignored.
+test_absent_registry_stays_quiet() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_pair "$home" regabsent)
+  advance_origin "$home" regabsent C1
+  [ ! -e "$home/data/projects.md" ] || fail "fixture must start with no registry at all"
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_not_contains "$out" "registry-invalid" \
+    "an absent registry is a normal state, not a malformed registry line"
+  assert_contains "$out" "regabsent: synced" "sync still proceeds with no registry present"
+  pass "no data/projects.md at all produces no registry-invalid report"
+}
+
+# A cloned project the captain has not registered yet resolves to the same
+# standing default with nothing malformed anywhere, so it stays quiet too.
+test_unregistered_clone_stays_quiet() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_pair "$home" regabsentee)
+  advance_origin "$home" regabsentee C1
+  mkdir -p "$home/data"
+  printf -- '- other [no-mistakes +yolo] - a different project (added 2026-06-27)\n' > "$home/data/projects.md"
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_not_contains "$out" "registry-invalid" \
+    "a cloned-but-unregistered project is legitimate until it is registered"
+  assert_contains "$out" "regabsentee: synced" "sync still proceeds for an unregistered clone"
+  pass "a cloned project absent from the registry produces no registry-invalid report"
+}
+
 test_single_project_by_bare_name_resolves() {
   local home out
   home=$(new_home)
@@ -668,6 +708,8 @@ test_no_origin_skipped
 test_local_only_skipped
 test_malformed_registry_line_is_reported_not_swallowed
 test_healthy_registry_line_stays_quiet
+test_absent_registry_stays_quiet
+test_unregistered_clone_stays_quiet
 test_single_project_by_bare_name_resolves
 test_single_project_by_bare_name_ignores_cwd_shadow
 test_single_project_by_projects_relative_name_resolves

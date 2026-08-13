@@ -1187,6 +1187,24 @@ ROWS
   pass "bootstrap's registry lint flags an unparseable or unknown registry line - naming the project, the offending line, and the expected format - and a healthy registry (or none at all) stays silent"
 }
 
+# The lint's one owner of the registry format lives under FM_ROOT, and a home can
+# legitimately resolve FM_ROOT to a checkout that carries no bin/ (the "new_world"
+# fixture in tests/fm-session-start.test.sh is exactly that shape). With no helper
+# to ask, the lint has no verdict, so it must stay silent instead of turning the
+# shell's own failed-exec message into a diagnostic for every registry line.
+test_project_registry_lint_without_the_helper() {
+  local case_dir fakebin out
+  case_dir="$TMP_ROOT/registry-no-helper"
+  mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/root/bin"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' '- proj [no-mistakes +yolo] - fixture (added 2026-01-01)' > "$case_dir/home/data/projects.md"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/root" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  [ -z "$out" ] || fail "registry lint must stay silent with no bin/fm-project-mode.sh, got: $out"
+  pass "bootstrap's registry lint stays silent when its bin/fm-project-mode.sh helper is absent"
+}
+
 test_bootstrap_reporting
 test_no_mistakes_min_version
 test_gh_axi_min_version
@@ -1216,3 +1234,4 @@ test_tasks_axi_verdict_handoff_is_consumed_once
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info
 test_crew_dispatch_validation
 test_project_registry_lint
+test_project_registry_lint_without_the_helper
