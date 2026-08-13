@@ -226,23 +226,30 @@ EOF
 }
 
 # bin/fm-project-mode.sh is the single owner of the registry grammar, so it - not
-# any caller - is what must recognize a malformed annotation. Every token inside
-# the brackets other than the mode and +yolo is unrecognized, and the mode token
-# being valid is not enough to call the line well formed. Callers select faults on
-# the "registry-invalid:" marker, so the two documented-normal states must warn
-# without it.
+# any caller - is what must recognize a malformed entry line, and it validates the
+# whole line against the grammar in its header rather than one position at a time:
+# a token before, inside, or after the brackets is judged by the same rule. The
+# mode token being valid is not enough to call the line well formed. Callers select
+# faults on the "registry-invalid:" marker, so the two documented-normal states
+# must warn without it.
 test_project_mode_warns_on_every_malformed_annotation() {
   local home name expect_out expect_warn out err
   home="$TMP_ROOT/project-mode-annotation/home"
   mkdir -p "$home/data"
   cat > "$home/data/projects.md" <<'EOF'
 - okproj [no-mistakes +yolo] - fixture (added 2026-01-01)
+- plainproj [no-mistakes] - fixture (added 2026-01-01)
 - flatproj [direct-PR] - fixture (added 2026-01-01)
+- localproj [local-only] - fixture (added 2026-01-01)
 - legacyproj - fixture (added 2026-01-01)
+- commaform [no-mistakes, yolo on] - fixture (added 2026-01-01)
 - extra [no-mistakes yolo on] - fixture (added 2026-01-01)
 - noplus [no-mistakes yolo] - fixture (added 2026-01-01)
 - typoflag [no-mistakes +yol] - fixture (added 2026-01-01)
 - badmode [no-mistakes, +yolo] - fixture (added 2026-01-01)
+- outsideyolo [no-mistakes] +yolo - fixture (added 2026-01-01)
+- outsidepair [direct-PR] yolo on - fixture (added 2026-01-01)
+- emptyann [] - fixture (added 2026-01-01)
 EOF
   while IFS='|' read -r name expect_out expect_warn; do
     [ -n "$name" ] || continue
@@ -255,12 +262,18 @@ EOF
     esac
   done <<'ROWS'
 okproj|no-mistakes on|quiet
+plainproj|no-mistakes off|quiet
 flatproj|direct-PR off|quiet
+localproj|local-only off|quiet
 legacyproj|no-mistakes off|quiet
+commaform|no-mistakes off|warn
 extra|no-mistakes off|warn
 noplus|no-mistakes off|warn
 typoflag|no-mistakes off|warn
 badmode|no-mistakes off|warn
+outsideyolo|no-mistakes off|warn
+outsidepair|no-mistakes off|warn
+emptyann|no-mistakes off|warn
 ROWS
 
   err=$(FM_HOME="$home" "$PROJECT_MODE" neverregistered 2>&1 >/dev/null)

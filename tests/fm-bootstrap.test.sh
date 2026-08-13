@@ -1146,13 +1146,15 @@ ROWS
   pass "bootstrap validates crew-dispatch.json and reports malformed or unverified configs"
 }
 
-# The registry lint is the comprehensive AC2 diagnostic: it validates every line
-# in data/projects.md, so it fires for a malformed line regardless of whether that
-# project is ever cloned under projects/ (unlike fleet_sync's own registry-invalid
-# report, which only sees clones it syncs), and regardless of whether an earlier
-# line already claimed the same project name. A healthy registry - or no registry
-# at all - must stay silent. A row's body is printf %b, so \n builds a multi-line
-# registry fixture.
+# The registry lint is the comprehensive AC2 diagnostic: it validates every entry
+# line in data/projects.md against the grammar bin/fm-project-mode.sh's header
+# documents, so it fires for a malformed line regardless of whether that project is
+# ever cloned under projects/ (unlike fleet_sync's own registry-invalid report,
+# which only sees clones it syncs), and regardless of whether an earlier line
+# already claimed the same project name. A healthy registry - or no registry at all
+# - must stay silent, and so must a bullet that is not an entry at all: recognition
+# is an allowlist, so prose in projects.md is never diagnosed as a broken entry.
+# A row's body is printf %b, so \n builds a multi-line registry fixture.
 test_project_registry_lint() {
   local label body expect mode case_dir fakebin out n
   n=0
@@ -1188,8 +1190,15 @@ unknown mode is flagged even though the project is never cloned^- uncloned [nope
 unrecognized annotation tokens are flagged^- extra [no-mistakes yolo on] - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: extra: unrecognized annotation token "yolo"
 a yolo flag missing its + is flagged^- noplus [no-mistakes yolo] - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: noplus: unrecognized annotation token "yolo"
 a typo'd yolo flag is flagged^- typoflag [no-mistakes +yol] - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: typoflag: unrecognized annotation token "+yol"
-an unterminated annotation is flagged^- unclosed [no-mistakes +yolo - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: unclosed: unrecognized annotation token
+an unterminated annotation is flagged^- unclosed [no-mistakes +yolo - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: unclosed: malformed annotation
+a +yolo outside the brackets is flagged^- outsideyolo [no-mistakes] +yolo - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: outsideyolo: malformed annotation "[no-mistakes] +yolo"
+loose tokens after the annotation are flagged^- outsidepair [direct-PR] yolo on - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: outsidepair: malformed annotation
+an empty annotation is flagged^- emptyann [] - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: emptyann: empty annotation
+a repeated yolo flag is flagged^- twiceyolo [no-mistakes +yolo +yolo] - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: twiceyolo: duplicate annotation token
 a legacy line with no annotation stays silent^- legacy - fixture (added 2026-01-01)^empty^
+a prose bullet is not an entry and stays silent^- see [docs](https://x) for the fleet notes^empty^
+a bullet without the added-date is not an entry and stays silent^- draft [no-mistakes, +yolo] - not registered yet^empty^
+an indented sub-bullet is not an entry and stays silent^  - child [nope] - sub-bullet (added 2026-01-01)^empty^
 a malformed duplicate of an already-registered name is flagged^- p [no-mistakes] - good (added 2026-01-01)\n- p [no-mistakes, +yolo] - dup typo (added 2026-01-01)^grep^PROJECT_REGISTRY: p: unknown mode "no-mistakes,"
 the duplicate report quotes the malformed line, not the healthy one^- p [no-mistakes] - good (added 2026-01-01)\n- p [no-mistakes, +yolo] - dup typo (added 2026-01-01)^grep^line: "- p [no-mistakes, +yolo] - dup typo (added 2026-01-01)"
 a healthy duplicate pair stays silent^- p [no-mistakes] - good (added 2026-01-01)\n- p [direct-PR +yolo] - dup (added 2026-01-01)^empty^

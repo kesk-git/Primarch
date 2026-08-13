@@ -960,9 +960,17 @@ families_for_changed_path() {
     bin/fm-decision-hold.sh|bin/fm-supervision*|bin/fm-transition-lib.sh|\
     bin/fm-tmux-lib.sh|bin/fm-marker-lib.sh|bin/fm-operational-input.sh|bin/fm-tasks-axi-lib.sh|\
     bin/fm-vendor-auth-probe.sh|\
-    bin/fm-primary-scope-lib.sh|bin/fm-project-mode.sh|bin/fm-promote.sh|\
+    bin/fm-primary-scope-lib.sh|bin/fm-promote.sh|\
     bin/fm-ff-lib.sh|bin/fm-gotmp*|bin/*pretool*)
       printf '%s\n' pure-contract-unit
+      ;;
+    bin/fm-project-mode.sh)
+      # The registry parser also owns two contracts consumed at session start:
+      # --lint's tab-separated rows, which bin/fm-bootstrap.sh formats into
+      # PROJECT_REGISTRY, and the registry-invalid: stderr marker that
+      # bin/fm-fleet-sync.sh selects on. Both are pinned in session-bootstrap.
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' session-bootstrap
       ;;
     .agents/skills/quota-array-dispatch/SKILL.md)
       printf '%s\n' pure-contract-unit
@@ -1011,7 +1019,7 @@ families_for_changed_path() {
     tests/*)
       printf '%s\n' "__unmapped__:$path"
       ;;
-    README.md|LICENSE|assets/*|docs/*|.gitignore)
+    README.md|LICENSE|assets/*|docs/*|.gitignore|.agents/notes/*)
       ;;
     *)
       families_for_test_reference "$path" \
