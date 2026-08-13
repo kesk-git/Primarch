@@ -48,7 +48,12 @@
 # it is never reported (a markdown-link or note bullet in projects.md stays quiet).
 # That allowlist is deliberate - a bullet the grammar does not recognize is not
 # assumed to be a broken entry - and it is the boundary to revisit first if a
-# malformed line is ever found unreported.
+# malformed line is ever found unreported. Trailing whitespace and a CRLF ending
+# are not part of the grammar and never decide the verdict: both are trimmed
+# before the line is judged. The accepted residual is narrower but real: a bullet
+# that omits "(added <date>)" entirely is still RESOLVED from by a lookup (it
+# falls back to no-mistakes off like any unrecognized annotation) while never
+# being reported - the parser reads posture from a line it declines to judge.
 #
 # Registered modes:
 #   no-mistakes            full pipeline -> PR -> configured merge authority (default)
@@ -130,6 +135,10 @@ registry_rows() {  # <lint 0|1> [<name>]
       if (k > 2) return "duplicate annotation token \"+yolo\"";
       return "";
     }
+    # Trailing whitespace and a CRLF ending are markdown noise, not grammar, so
+    # they are trimmed once here - before recognition, field splitting, and the
+    # raw line a diagnostic quotes - rather than tolerated per anchor.
+    { sub(/\r$/, ""); sub(/[[:space:]]+$/, "") }
     $1=="-" && NF>=2 && (lint==1 || $2==n) {
       mode="no-mistakes"; yolo="off";
       if ($3 ~ /^\[/) {

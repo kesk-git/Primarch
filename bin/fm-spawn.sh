@@ -1630,8 +1630,16 @@ if [ "$KIND" = ship ]; then
   # Only fm-project-mode.sh's malformed-line warning (its "registry-invalid:"
   # marker) is a fault worth a spawn-time line; an absent registry and an
   # unregistered project are documented-normal states that stay quiet.
-  STANDING_MODE=$("$FM_ROOT/bin/fm-project-mode.sh" --raw "$PROJ_NAME" 2>/dev/null | cut -d' ' -f1) || STANDING_MODE=
-  REGISTRY_WARN=$("$FM_ROOT/bin/fm-project-mode.sh" --raw "$PROJ_NAME" 2>&1 >/dev/null) || REGISTRY_WARN=
+  # One parser run, not one per stream: stderr lands in a temp file so the posture
+  # and its warning come from the same read of data/projects.md.
+  STANDING_ERR=$(mktemp "${TMPDIR:-/tmp}/fm-spawn-mode.XXXXXX" 2>/dev/null) || STANDING_ERR=/dev/null
+  STANDING_LINE=$("$FM_ROOT/bin/fm-project-mode.sh" --raw "$PROJ_NAME" 2>"$STANDING_ERR") || STANDING_LINE=
+  STANDING_MODE=${STANDING_LINE%% *}
+  REGISTRY_WARN=""
+  if [ "$STANDING_ERR" != /dev/null ]; then
+    REGISTRY_WARN=$(<"$STANDING_ERR")
+    rm -f "$STANDING_ERR"
+  fi
   case "$REGISTRY_WARN" in
     *'registry-invalid:'*) printf '%s\n' "$REGISTRY_WARN" >&2 ;;
   esac

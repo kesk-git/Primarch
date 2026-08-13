@@ -251,6 +251,12 @@ test_project_mode_warns_on_every_malformed_annotation() {
 - outsidepair [direct-PR] yolo on - fixture (added 2026-01-01)
 - emptyann [] - fixture (added 2026-01-01)
 EOF
+  # Trailing whitespace and a CRLF ending are markdown noise, not grammar: a
+  # malformed line still has to warn through either. Appended with printf rather
+  # than written into the heredoc so the trailing space and the CR survive an
+  # editor or formatter that strips trailing whitespace from this test file.
+  printf -- '- trailspace [no-mistakes, +yolo] - fixture (added 2026-01-01) \n' >> "$home/data/projects.md"
+  printf -- '- crlfline [no-mistakes, +yolo] - fixture (added 2026-01-01)\r\n' >> "$home/data/projects.md"
   while IFS='|' read -r name expect_out expect_warn; do
     [ -n "$name" ] || continue
     out=$(FM_HOME="$home" "$PROJECT_MODE" "$name" 2>/dev/null)
@@ -274,6 +280,8 @@ badmode|no-mistakes off|warn
 outsideyolo|no-mistakes off|warn
 outsidepair|no-mistakes off|warn
 emptyann|no-mistakes off|warn
+trailspace|no-mistakes off|warn
+crlfline|no-mistakes off|warn
 ROWS
 
   err=$(FM_HOME="$home" "$PROJECT_MODE" neverregistered 2>&1 >/dev/null)

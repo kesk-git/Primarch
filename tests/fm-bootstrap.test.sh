@@ -1195,6 +1195,9 @@ a +yolo outside the brackets is flagged^- outsideyolo [no-mistakes] +yolo - fixt
 loose tokens after the annotation are flagged^- outsidepair [direct-PR] yolo on - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: outsidepair: malformed annotation
 an empty annotation is flagged^- emptyann [] - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: emptyann: empty annotation
 a repeated yolo flag is flagged^- twiceyolo [no-mistakes +yolo +yolo] - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: twiceyolo: duplicate annotation token
+a malformed entry with trailing whitespace is still flagged^- trailspace [no-mistakes, +yolo] - fixture (added 2026-01-01)\040\011^grep^PROJECT_REGISTRY: trailspace: unknown mode "no-mistakes,"
+a malformed entry with a CRLF ending is still flagged^- crlfline [no-mistakes, +yolo] - fixture (added 2026-01-01)\r^grep^PROJECT_REGISTRY: crlfline: unknown mode "no-mistakes,"
+a healthy line with trailing whitespace stays silent^- clean [no-mistakes +yolo] - fixture (added 2026-01-01)\040^empty^
 a legacy line with no annotation stays silent^- legacy - fixture (added 2026-01-01)^empty^
 a prose bullet is not an entry and stays silent^- see [docs](https://x) for the fleet notes^empty^
 a bullet without the added-date is not an entry and stays silent^- draft [no-mistakes, +yolo] - not registered yet^empty^
