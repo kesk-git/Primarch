@@ -14,8 +14,9 @@
 #   signal: <file>...      status/turn-end signals, surfaced when a listed status
 #                          has a captain-relevant verb OR a no-verb signal's crew
 #                          is not provably working, unless afk is active
-#   stale: <window>        a provably-working stale is ALWAYS absorbed (with a wedge
-#                          timer) regardless of what the status log says - an active
+#   stale: <window>        a provably-working stale is ALWAYS absorbed AT FIRST SIGHT
+#                          (with a wedge timer) regardless of what the status log
+#                          says - an active
 #                          run-step or busy pane outranks even a captain-relevant log
 #                          line, since the crew's own log gets no new entry once
 #                          firstmate hands it to a no-mistakes validation. A declared
@@ -23,8 +24,11 @@
 #                          re-surface cadence, never as a wedge. Only when neither
 #                          absorb class applies does the log's last line decide:
 #                          terminal (captain-relevant) or non-terminal (no verb),
-#                          both surfaced at once. A provably-working stale past the
-#                          wedge threshold also surfaces, with an "escalation N"
+#                          both surfaced at once. Past the wedge threshold the
+#                          authoritative state is re-read: a pipeline-owned run on
+#                          an IDLE pane is absorbed again and its timer reset,
+#                          while a BUSY pane - and every other kind of working
+#                          evidence - surfaces with an "escalation N"
 #                          count in the reason; at FM_WEDGE_DEMAND_INSPECT_COUNT
 #                          consecutive escalations on the SAME pane, the reason
 #                          also carries a "demand-deep-inspection" marker so the
@@ -135,13 +139,14 @@ SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trai
 # busy pane is SURFACED, so a finish reported only through interactive pane menus
 # (no done: status) is never swallowed. An ACTIONABLE wake (a captain-relevant
 # signal, a no-verb signal whose crew is not provably working, any check, a stale
-# pane whose crew is not provably working, a provably-working stale past the
-# threshold, or anything unknown) is written to the durable queue and exits, which
+# pane whose crew is not provably working, a stale past the wedge threshold whose
+# escalation-moment re-read does NOT show a pipeline-owned run on an idle pane,
+# or anything unknown) is written to the durable queue and exits, which
 # is what wakes the LLM through the background-task completion. The same classifier
 # (fm-classify-lib.sh) backs the away-mode daemon; while state/.afk exists the
 # daemon owns triage, so this watcher reverts to one-shot (enqueue + exit on every
 # wake) and never double-triages - and never runs the costly provably-working read.
-STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provably-working stale escalates as a possible wedge
+STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before an absorbed stale escalates as a possible wedge, unless the re-read at that moment shows a pipeline-owned run on an idle pane
 # A busy pane is unconditional proof of liveness with no built-in duration bound,
 # so a hung foreground call can remain hidden even while its rendered busy
 # footer changes every poll. BUSY_TURN_MAX_SECS bounds how long any busy pane
@@ -329,7 +334,16 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
         # one.
         n=$(( $(cat "$escalation_file" 2>/dev/null || echo 0) + 1 ))
         echo "$n" > "$escalation_file"
-        if [ "${verdict%% *}" = unreadable ]; then
+        if [ "${verdict%% *}" = unreadable ] && [ "$pane" = busy ]; then
+          # An unmeasured run source must never overwrite a fact this same poll
+          # OBSERVED. On this route the watcher saw the pane busy past
+          # BUSY_TURN_MAX_SECS with no completed turn, so that is the signal to
+          # inspect; reporting only "could not confirm whether this crew is
+          # working" would contradict it and send the deep look at the run
+          # source instead of at the pane. Name both.
+          verdict_note="busy past the turn bound with no completed turn, and the current state could not be read either"
+          deep_note="this pane has been busy with no completed turn for $n escalation windows in a row - judge the observed pane first; the run source not answering is a second, separate problem"
+        elif [ "${verdict%% *}" = unreadable ]; then
           # Escalate, but never as a measured verdict about the crew: the guard
           # fired because the state could not be read, which is a different
           # problem from a crew that stopped, and needs a different look. The

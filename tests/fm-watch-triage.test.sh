@@ -804,6 +804,50 @@ test_busy_pane_under_live_run_still_wedge_escalates() {
   pass "a busy pane past BUSY_TURN_MAX_SECS still wedge-escalates while its branch's run is live"
 }
 
+# The wake reason is what a supervisor acts on, so it must name what was actually
+# OBSERVED. On the busy route the watcher saw this pane busy past its turn bound
+# with no completed turn; if the escalation-moment crew-state read then times out,
+# reporting only "could not confirm whether this crew is working" contradicts that
+# observation and sends the deep look at the run source instead of at the pane.
+# An unmeasured state must never overwrite a measured one in the diagnosis.
+test_busy_pane_unreadable_state_names_the_observed_pane() {
+  local dir state fakebin out capture_file window key pane_hash sig pid
+  dir=$(make_case busy-unreadable-wording); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-busy-unread"
+  printf 'Working...' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/busy-unread.meta"
+  record_pi_busy "$state" busy-unread
+  printf 'working: setup complete\n' > "$state/busy-unread.status"
+  sig=$(seen_sig "$state/busy-unread.status"); printf '%s' "$sig" > "$state/.seen-busy-unread_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "Working...")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  touch -t 200001010000 "$state/busy-unread.meta"
+  # Already past the wedge threshold, and at the deep-inspection threshold, so
+  # this poll emits both the verdict phrase and the deep-inspection instruction.
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  printf '2\n' > "$state/.wedge-escalations-$key"
+  export FM_FAKE_CREW_STATE='state: unreadable · source: run-source · validation state could not be read (no-mistakes did not answer within 10s)'
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || { reap "$pid"; unset FM_FAKE_CREW_STATE; fail "a busy pane past its turn bound stopped escalating when its state went unreadable"; }
+  grep -F "busy past the turn bound" "$out" >/dev/null \
+    || { unset FM_FAKE_CREW_STATE; fail "the reason did not name the pane fact the watcher directly observed"; }
+  grep -F "judge the observed pane first" "$out" >/dev/null \
+    || { unset FM_FAKE_CREW_STATE; fail "the deep-inspection instruction did not point at the observed pane"; }
+  grep -F "find out why the run source is not answering before judging the crew" "$out" >/dev/null \
+    && { unset FM_FAKE_CREW_STATE; fail "an unmeasured run source overrode a directly observed busy pane in the diagnosis"; }
+  grep -F ", escalation 3" "$out" >/dev/null \
+    || { unset FM_FAKE_CREW_STATE; fail "the reason lost the escalation marker the AFK daemon keys on"; }
+  unset FM_FAKE_CREW_STATE
+  pass "a busy pane whose state is also unreadable is diagnosed by the pane it observed, not the run source"
+}
+
 # --- a declared bounded external wait is never a possible wedge ---------------
 # The crew said why it is idle. Repeatedly re-asking "possible wedge?" is the
 # alarm that trains dismissal of the one that matters. This pins the standing
@@ -2220,6 +2264,7 @@ test_nonterminal_stale_provably_working_absorbed_then_escalated
 test_active_run_not_wedge_escalated_past_threshold
 test_busy_pane_alone_still_wedge_escalates
 test_busy_pane_under_live_run_still_wedge_escalates
+test_busy_pane_unreadable_state_names_the_observed_pane
 test_declared_pause_never_wedge_escalates
 test_unreadable_state_escalates_without_claiming_a_wedge
 test_unreadable_escalation_reaches_demand_deep_inspection
