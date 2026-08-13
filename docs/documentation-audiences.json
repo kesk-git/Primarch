@@ -113,6 +113,10 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": ".agents/notes/fm-registry-typo-silently-defaults.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": ".agents/skills/afk/SKILL.md",
       "audience": "agent-runtime"
     },
