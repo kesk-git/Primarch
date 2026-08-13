@@ -39,6 +39,9 @@ They are recorded here because the fold should check they survived, not because 
   Any consumer that reads it must confirm the endpoint still exists first, or it reports a dead crew as a measured `working`.
   `fm_busy_classify_live` is the form that carries the dead-endpoint precedence; plain `fm_busy_classify` does not.
   Measured 2026-08-13 on two crews whose agent had exited while the pipeline run stayed alive (pane showed `pane_current_command=zsh` and the harness's own "Resume this session with: claude --resume <id>" tail); their correct wedge alarms were absorbed by hand as false ones.
+  That 2026-08-13 case is NOT closed by this task, and the reason is worth keeping because it is counter-intuitive: a claude agent that shuts down fires SessionEnd, which `bin/fm-spawn.sh` wires to write an `idle` record, so an EXITED claude agent classifies `idle claude-hook` rather than unknown or dead (reproduced directly against `fm_busy_classify`).
+  It therefore reads as a measured idle pane and is absorbed by the wedge guard exactly as a healthy quiet one is.
+  The guard this task added refuses only an UNPROVEN pane; detecting an exited agent is the separately filed `fm-exited-agent-reads-working`.
 
 - Pending edit this task could not make itself, and the reason it is recorded here rather than done.
   AGENTS.md line 344 still reads "Judge validation by the current-code-matched run step through `bin/fm-crew-state.sh`".

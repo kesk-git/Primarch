@@ -270,10 +270,14 @@ test_afk_housekeeping_absorbs_a_live_run_and_still_alarms_a_dead_one() {
 
 # The CONTROL that pins the two facts apart. stale_window_is_busy's "not busy"
 # branch covers a measured idle AND a pane nobody could measure; only the first
-# is evidence. A crew whose agent process exited classifies unknown/dead, never
-# idle, so absorbing on the merged branch would silence exactly that crew while
-# its pipeline run stays alive - the twice-reproduced 2026-08-13 failure. Same
-# live run as HALF 1 above, so the pane token is the only thing deciding.
+# is evidence, so absorbing on the merged branch would spend an absence of
+# measurement as a measurement. Same live run as HALF 1 above, so the pane token
+# is the only thing deciding.
+#
+# This pins the UNPROVEN case only. It does NOT cover an exited agent: a claude
+# agent that shuts down writes an `idle` record through its SessionEnd hook, so
+# that crew classifies `idle` and is still absorbed. Catching it is the
+# separately deferred fm-exited-agent-reads-working item.
 test_afk_housekeeping_still_alarms_an_unproven_pane_under_a_live_run() {
   local dir state fakebin key task win pane
   dir=$(make_supercase afk-housekeeping-unproven-pane)

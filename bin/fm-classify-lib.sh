@@ -673,15 +673,24 @@ crew_absorb_verdict() {  # <id>
 # a busy pane whose branch has a live run reports `working - run-step`
 # byte-identically to an idle one: deciding on the source token alone would
 # silence exactly the wedged pane this guard exists to catch. The asymmetry is
-# the point - an idle pane under a live run is that run's normal shape, a busy
-# pane past its turn bound never is.
+# the point - a provably idle pane under a live run is that run's normal shape,
+# a busy pane past its turn bound never is.
 #
 # <pane> must POSITIVELY be `idle`. Absorbing on "anything that is not busy"
-# reads an UNPROVEN pane as a measured idle - and a pane whose agent process has
-# exited classifies unknown/dead, not idle, so that spelling silences exactly the
-# dead crew this guard must still catch (measured live 2026-08-13 on two crews).
-# Requiring the positive token also means a caller that passes a stale, empty, or
-# misspelled value fails SAFE into escalating instead of silently absorbing.
+# reads an UNPROVEN pane - unknown, dead, malformed, or no record at all - as a
+# measured idle, which is the same absence-reported-as-measurement defect the
+# crew-state line exists to prevent. Requiring the positive token also means a
+# caller that passes a stale, empty, or misspelled value fails SAFE into
+# escalating instead of silently absorbing.
+#
+# What this does NOT catch, stated because the opposite is easy to assume: a
+# claude agent that EXITS still classifies `idle`, because bin/fm-spawn.sh wires
+# its SessionEnd hook to write `idle --source claude-hook` precisely so no stale
+# busy record survives a shutdown (verified by reproduction: an armed gen plus a
+# session-end idle record yields `idle claude-hook`). So the twice-reproduced
+# 2026-08-13 shape - an exited agent under a still-live pipeline run - is
+# absorbed here exactly as before. Detecting an exited agent is the separately
+# deferred fm-exited-agent-reads-working item, not something this guard closes.
 crew_run_is_active() {  # <verdict> <pane>
   [ "$2" = idle ] || return 1
   [ "$1" = "working run-step" ]

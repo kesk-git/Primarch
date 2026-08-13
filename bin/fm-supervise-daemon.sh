@@ -47,9 +47,10 @@
 #     (configurable), rechecked once. A wedged crewmate is therefore detected
 #     within STALE_ESCALATE_SECS + a tick, never lost. A declared pause instead
 #     gets its own longer PAUSE_RESURFACE_SECS recheck, never a wedge escalation,
-#     and an idle pane under a run no-mistakes still owns is absorbed on the same
-#     shared predicate the always-on watcher uses, so away mode cannot re-raise
-#     the false alarm the watcher stopped raising.
+#     and a MEASURED-idle pane under a run no-mistakes still owns is absorbed on
+#     the same shared predicate the always-on watcher uses, so away mode cannot
+#     re-raise the false alarm the watcher stopped raising. A pane whose busy
+#     state could not be classified is not a measured idle and still escalates.
 #     Crewmates are autonomous, so a delayed stale response does not stall a
 #     healthy crewmate's own progress.
 #     Buffered escalation delivery also has a max-defer alarm: if a digest stays
@@ -970,8 +971,9 @@ _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first ar
 #     Never silently defer forever.
 #  2) stale recheck: for each pending stale marker past STALE_ESCALATE_SECS,
 #     re-peek the pane; resumed -> clear marker; still idle -> escalate (wedge),
-#     UNLESS the shared absorb owner reports a live pipeline-owned run, in which
-#     case the idle pane is that run's normal shape and the marker is reset.
+#     UNLESS the shared absorb owner reports a live pipeline-owned run AND the
+#     pane was MEASURED idle, in which case the quiet pane is that run's normal
+#     shape and the marker is reset; an unclassifiable pane still escalates.
 #  2b) pause re-surface: for each declared-pause marker past PAUSE_RESURFACE_SECS,
 #     re-peek; busy/gone -> clear; still idle + still paused -> escalate a recheck
 #     digest and reset the window (repeating bounded re-surface, never a wedge).
@@ -1039,10 +1041,12 @@ housekeeping() {  # <state>
       # facts: a measured idle - the normal shape of a crew whose pipeline-owned
       # run is still going, since no-mistakes owns it for the run's duration -
       # and a pane nobody could measure. STALE_PANE_TOKEN keeps them apart and
-      # only the measured idle absorbs, because an agent process that has exited
-      # classifies unknown/dead rather than idle: spending that as an idle would
-      # silence the very crew away mode exists to catch. The watcher exempts the
-      # same measured-idle case at its own wedge timer, and away mode must not
+      # only the measured idle absorbs, so an absence of measurement is never
+      # spent as one. It does NOT follow that an exited agent now alarms here: a
+      # claude agent that shuts down writes an `idle` record through its
+      # SessionEnd hook, so that crew still absorbs, and catching it is the
+      # separately deferred fm-exited-agent-reads-working item. The watcher
+      # exempts the same measured-idle case at its own wedge timer, and away mode must not
       # re-raise the alarm the watcher just stopped raising, so the SAME shared
       # owner decides here. Resetting the marker instead of dropping it keeps the
       # pane tracked, so the window after the run stops escalates promptly - and

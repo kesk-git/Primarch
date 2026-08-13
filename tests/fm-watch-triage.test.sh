@@ -730,10 +730,13 @@ test_active_run_not_wedge_escalated_past_threshold() {
 
 # The CONTROL for the absorb above, and the third outcome the boolean busy test
 # merges away. `not provably busy` covers a MEASURED idle and a pane nobody could
-# measure, and only the first is evidence. A crew whose agent process has exited
-# classifies unknown/dead, never idle - the twice-reproduced 2026-08-13 shape -
-# so spending an unproven pane as an idle one would silence exactly the dead crew
-# the guard exists to catch, while its pipeline run happily stays alive.
+# measure, and only the first is evidence, so spending an unproven pane as an
+# idle one would report an absence of measurement as a measurement.
+#
+# This pins the UNPROVEN case only. It does NOT cover an exited agent: a claude
+# agent that shuts down writes an `idle` record through its SessionEnd hook
+# (bin/fm-spawn.sh), so that crew classifies `idle` and is still absorbed here.
+# Catching it is the separately deferred fm-exited-agent-reads-working item.
 test_unproven_pane_under_live_run_still_wedge_escalates() {
   local dir state fakebin out capture_file window key pane_hash sig pid
   dir=$(make_case unproven-pane-live-run); state="$dir/state"; fakebin="$dir/fakebin"

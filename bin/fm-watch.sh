@@ -140,7 +140,7 @@ SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trai
 # (no done: status) is never swallowed. An ACTIONABLE wake (a captain-relevant
 # signal, a no-verb signal whose crew is not provably working, any check, a stale
 # pane whose crew is not provably working, a stale past the wedge threshold whose
-# escalation-moment re-read does NOT show a pipeline-owned run on an idle pane,
+# escalation-moment re-read does NOT show a pipeline-owned run on a provably idle pane,
 # or anything unknown) is written to the durable queue and exits, which
 # is what wakes the LLM through the background-task completion. The same classifier
 # (fm-classify-lib.sh) backs the away-mode daemon; while state/.afk exists the
@@ -149,7 +149,7 @@ SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trai
 # costly provably-working read, but the busy-turn routes sit OUTSIDE it, so a
 # busy pane past BUSY_TURN_MAX_SECS still reaches wedge_timer_check under AFK and
 # pays one bounded crew-state read per escalation window per pane.
-STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before an absorbed stale escalates as a possible wedge, unless the re-read at that moment shows a pipeline-owned run on an idle pane
+STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before an absorbed stale escalates as a possible wedge, unless the re-read at that moment shows a pipeline-owned run on a provably idle pane
 # A busy pane is unconditional proof of liveness with no built-in duration bound,
 # so a hung foreground call can remain hidden even while its rendered busy
 # footer changes every poll. BUSY_TURN_MAX_SECS bounds how long any busy pane
