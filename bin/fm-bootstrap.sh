@@ -1084,30 +1084,23 @@ crew_dispatch_validate() {
   fi
 }
 
-# Cheap round-trip lint over the whole registry, so a malformed or unknown
-# registry line is diagnosed regardless of whether that project is cloned
-# locally or ever touched by fleet_sync's own per-clone check. Reuses
-# bin/fm-project-mode.sh as the single owner of the registry format and its
-# warning text (AGENTS.md "one-owner rule"); this never re-parses the format
-# itself. A healthy registry stays silent.
+# Lint of the whole registry, so a malformed line is diagnosed regardless of
+# whether that project is cloned locally or ever touched by fleet_sync's own
+# per-clone check. bin/fm-project-mode.sh --lint is the single owner of the
+# registry format and of which lines are faults (AGENTS.md "one-owner rule"); it
+# validates every line in one process, including a malformed duplicate entry for
+# an already-registered name, and this never re-parses the format itself. A
+# healthy, absent, or unvalidatable registry stays silent - the helper's own
+# stderr is left unredirected so a broken owner is visible rather than mistaken
+# for a clean registry.
 project_registry_lint() {
-  local reg="$DATA/projects.md" line name warn
+  local name fault raw
   [ -x "$FM_ROOT/bin/fm-project-mode.sh" ] || return 0
-  [ -f "$reg" ] || return 0
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      "- "*) ;;
-      *) continue ;;
-    esac
-    name=$(printf '%s\n' "$line" | awk '{print $2}')
+  [ -f "$DATA/projects.md" ] || return 0
+  while IFS=$'\t' read -r name fault raw; do
     [ -n "$name" ] || continue
-    warn=$(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$FM_ROOT/bin/fm-project-mode.sh" --raw "$name" 2>&1 >/dev/null || true)
-    case "$warn" in
-      *'unknown mode'*) ;;
-      *) continue ;;
-    esac
-    echo "PROJECT_REGISTRY: $name: $(printf '%s' "$warn" | tr '\n' ' ' | sed 's/[[:space:]]*$//') - line: \"$line\" - expected: - $name [<mode> +yolo] - <desc> (added <date>)"
-  done < "$reg"
+    echo "PROJECT_REGISTRY: $name: $fault - line: \"$raw\" - expected: - $name [<mode> +yolo] - <desc> (added <date>)"
+  done < <(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$FM_ROOT/bin/fm-project-mode.sh" --lint)
 }
 
 startup_memory_budget_setup() {

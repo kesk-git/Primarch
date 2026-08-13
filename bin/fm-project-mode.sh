@@ -33,9 +33,21 @@
 # --raw prints the registered annotation unmapped, so a caller that must tell a
 # conditional policy apart from a flat mode sees "no-mistakes-prod-only" itself.
 #
-# An unknown/missing project or unknown mode falls back to "no-mistakes off" and warns
-# to stderr, so a typo never silently drops the gate.
-# Usage: fm-project-mode.sh [--raw] <project-name>
+# A malformed annotation - an unknown mode, or any token inside the brackets other
+# than the mode and +yolo - falls back to "no-mistakes off" and warns to stderr as
+# "warn: registry-invalid: <reason> for <name>; ...", so a typo never silently
+# drops the gate. That "registry-invalid:" marker is the caller contract: a
+# warning carrying it means the line is malformed and must be reported, and the
+# two warnings without it ("no registry at <path>", "project X not in registry")
+# mark documented-normal states every caller must stay quiet about. A new caller
+# selects on the marker rather than re-deriving which warnings are faults.
+#
+# --lint validates every line in the registry instead of resolving one project,
+# in a single process, and prints one tab-separated "<name>\t<reason>\t<raw line>"
+# row per malformed line (nothing at all for a healthy or absent registry). Unlike
+# a per-name lookup, which stops at the first line carrying that name, it reaches a
+# malformed duplicate entry for an already-registered name.
+# Usage: fm-project-mode.sh [--raw|--lint] <project-name>
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,11 +56,66 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 REG="$DATA/projects.md"
 RAW=0
-if [ "${1:-}" = "--raw" ]; then
-  RAW=1
-  shift
+LINT=0
+case "${1:-}" in
+  --raw) RAW=1; shift ;;
+  --lint) LINT=1; shift ;;
+esac
+
+# awk emits one "<name>\037<mode>\037<yolo>\037<unrecognized token>\037<raw line>"
+# row per registry line: the first line matching <name> for a lookup, every
+# "- <name>" line under --lint. The parse itself is unchanged - the annotation's
+# first token is the mode unless it is +yolo, and any +yolo turns yolo on - and
+# the fourth field only reports the first token the grammar does not recognize,
+# which an unterminated "[" also produces because the scan then runs past the
+# annotation into the description.
+registry_rows() {  # <lint 0|1> [<name>]
+  awk -v lint="$1" -v n="${2:-}" '
+    $1=="-" && NF>=2 && (lint==1 || $2==n) {
+      mode="no-mistakes"; yolo="off"; bad="";
+      if ($3 ~ /^\[/) {
+        s="";
+        for (i=3; i<=NF; i++) { s = s (s==""?"":" ") $i; if ($i ~ /\]$/) break }
+        gsub(/^\[|\]$/, "", s);           # strip the surrounding brackets
+        k = split(s, a, " ");
+        if (a[1] != "" && a[1] != "+yolo") mode = a[1];
+        for (j=1; j<=k; j++) if (a[j]=="+yolo") yolo="on";
+        for (j=2; j<=k; j++) if (a[j] != "+yolo" && bad=="") bad=a[j];
+      }
+      printf "%s\037%s\037%s\037%s\037%s\n", $2, mode, yolo, bad, $0;
+      if (lint!=1) exit;
+    }
+  ' "$REG"
+}
+
+# The single owner of "is this annotation well formed": FAULT holds the operator-
+# facing reason, or is empty when the line parses cleanly. Both the per-project
+# warning and --lint report through it, so the two never drift apart.
+FAULT=
+classify_annotation() {  # <mode> <unrecognized token>
+  FAULT=
+  if [ -n "$2" ]; then
+    FAULT="unrecognized annotation token \"$2\""
+    return 0
+  fi
+  case "$1" in
+    no-mistakes|direct-PR|local-only|no-mistakes-prod-only) ;;
+    *) FAULT="unknown mode \"$1\"" ;;
+  esac
+}
+
+if [ "$LINT" -eq 1 ]; then
+  [ -f "$REG" ] || exit 0
+  while IFS=$'\037' read -r lname lmode _ lbad lraw; do
+    [ -n "$lname" ] || continue
+    classify_annotation "$lmode" "$lbad"
+    [ -n "$FAULT" ] || continue
+    printf '%s\t%s\t%s\n' "$lname" "$FAULT" "$lraw"
+  done < <(registry_rows 1)
+  exit 0
 fi
-NAME=${1:?usage: fm-project-mode.sh [--raw] <project-name>}
+
+NAME=${1:?usage: fm-project-mode.sh [--raw|--lint] <project-name>}
 
 if [ ! -f "$REG" ]; then
   echo "warn: no registry at $REG; defaulting $NAME to no-mistakes off" >&2
@@ -56,34 +123,23 @@ if [ ! -f "$REG" ]; then
   exit 0
 fi
 
-# awk emits "<mode> <yolo>" (one line) or nothing if the project is absent.
-parsed=$(awk -v n="$NAME" '
-  $1=="-" && $2==n {
-    mode="no-mistakes"; yolo="off";
-    if ($3 ~ /^\[/) {
-      s="";
-      for (i=3; i<=NF; i++) { s = s (s==""?"":" ") $i; if ($i ~ /\]$/) break }
-      gsub(/^\[|\]$/, "", s);           # strip the surrounding brackets
-      k = split(s, a, " ");
-      if (a[1] != "" && a[1] != "+yolo") mode = a[1];
-      for (j=1; j<=k; j++) if (a[j]=="+yolo") yolo="on";
-    }
-    print mode, yolo; exit
-  }
-' "$REG")
+row=$(registry_rows 0 "$NAME")
 
-if [ -z "$parsed" ]; then
+if [ -z "$row" ]; then
   echo "warn: project \"$NAME\" not in registry; defaulting to no-mistakes off" >&2
   echo "no-mistakes off"
   exit 0
 fi
 
-mode=${parsed%% *}
-yolo=${parsed##* }
-case "$mode" in
-  no-mistakes|direct-PR|local-only|no-mistakes-prod-only) ;;
-  *) echo "warn: unknown mode \"$mode\" for $NAME; defaulting to no-mistakes off" >&2; mode=no-mistakes; yolo=off ;;
-esac
+IFS=$'\037' read -r _ mode yolo bad _ <<EOF
+$row
+EOF
+classify_annotation "$mode" "$bad"
+if [ -n "$FAULT" ]; then
+  echo "warn: registry-invalid: $FAULT for $NAME; defaulting to no-mistakes off" >&2
+  mode=no-mistakes
+  yolo=off
+fi
 case "$yolo" in on|off) ;; *) yolo=off ;; esac
 # A conditional policy is not a task mode. Mechanical callers get its most
 # rigorous leg; --raw callers get the annotation itself (see the header).

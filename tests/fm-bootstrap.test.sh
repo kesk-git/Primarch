@@ -1146,11 +1146,13 @@ ROWS
   pass "bootstrap validates crew-dispatch.json and reports malformed or unverified configs"
 }
 
-# The registry lint is the comprehensive AC2 diagnostic: it walks every line in
-# data/projects.md directly, so it fires for a malformed or unknown line
-# regardless of whether that project is ever cloned under projects/ (unlike
-# fleet_sync's own registry-invalid report, which only sees clones it syncs).
-# A healthy registry - or no registry at all - must stay silent.
+# The registry lint is the comprehensive AC2 diagnostic: it validates every line
+# in data/projects.md, so it fires for a malformed line regardless of whether that
+# project is ever cloned under projects/ (unlike fleet_sync's own registry-invalid
+# report, which only sees clones it syncs), and regardless of whether an earlier
+# line already claimed the same project name. A healthy registry - or no registry
+# at all - must stay silent. A row's body is printf %b, so \n builds a multi-line
+# registry fixture.
 test_project_registry_lint() {
   local label body expect mode case_dir fakebin out n
   n=0
@@ -1167,7 +1169,7 @@ test_project_registry_lint() {
     cp "$ROOT/bin/fm-project-mode.sh" "$case_dir/root/bin/fm-project-mode.sh"
     printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
     if [ "$body" != "-" ]; then
-      printf '%s\n' "$body" > "$case_dir/home/data/projects.md"
+      printf '%b\n' "$body" > "$case_dir/home/data/projects.md"
     fi
     fakebin=$(make_fake_toolchain "$case_dir")
     out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/root" \
@@ -1183,26 +1185,41 @@ malformed mode (trailing comma) is flagged, project named^- proj [no-mistakes, +
 malformed mode is flagged with the offending line quoted^- proj [no-mistakes, +yolo] - fixture (added 2026-01-01)^grep^line: "- proj [no-mistakes, +yolo] - fixture (added 2026-01-01)"
 malformed mode is flagged with the expected format^- proj [no-mistakes, +yolo] - fixture (added 2026-01-01)^grep^expected: - proj [<mode> +yolo]
 unknown mode is flagged even though the project is never cloned^- uncloned [nope] - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: uncloned:
+unrecognized annotation tokens are flagged^- extra [no-mistakes yolo on] - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: extra: unrecognized annotation token "yolo"
+a yolo flag missing its + is flagged^- noplus [no-mistakes yolo] - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: noplus: unrecognized annotation token "yolo"
+a typo'd yolo flag is flagged^- typoflag [no-mistakes +yol] - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: typoflag: unrecognized annotation token "+yol"
+an unterminated annotation is flagged^- unclosed [no-mistakes +yolo - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: unclosed: unrecognized annotation token
+a legacy line with no annotation stays silent^- legacy - fixture (added 2026-01-01)^empty^
+a malformed duplicate of an already-registered name is flagged^- p [no-mistakes] - good (added 2026-01-01)\n- p [no-mistakes, +yolo] - dup typo (added 2026-01-01)^grep^PROJECT_REGISTRY: p: unknown mode "no-mistakes,"
+the duplicate report quotes the malformed line, not the healthy one^- p [no-mistakes] - good (added 2026-01-01)\n- p [no-mistakes, +yolo] - dup typo (added 2026-01-01)^grep^line: "- p [no-mistakes, +yolo] - dup typo (added 2026-01-01)"
+a healthy duplicate pair stays silent^- p [no-mistakes] - good (added 2026-01-01)\n- p [direct-PR +yolo] - dup (added 2026-01-01)^empty^
 ROWS
-  pass "bootstrap's registry lint flags an unparseable or unknown registry line - naming the project, the offending line, and the expected format - and a healthy registry (or none at all) stays silent"
+  pass "bootstrap's registry lint flags every malformed registry line - unknown mode, unrecognized annotation token, or a malformed duplicate of an already-registered name - naming the project, the offending line, and the expected format, and a healthy registry (or none at all) stays silent"
 }
 
 # The lint's one owner of the registry format lives under FM_ROOT, and a home can
 # legitimately resolve FM_ROOT to a checkout that carries no bin/ (the "new_world"
 # fixture in tests/fm-session-start.test.sh is exactly that shape). With no helper
-# to ask, the lint has no verdict, so it must stay silent instead of turning the
-# shell's own failed-exec message into a diagnostic for every registry line.
+# to ask, the lint has no verdict, so the whole run must stay quiet - the empty
+# stdout is what the operator sees, and the clean stderr is what the [ -x ] guard
+# itself buys: the lint deliberately does not redirect the helper's stderr (so a
+# broken owner stays visible), so without the guard bash's own failed-exec message
+# for the missing helper leaks into every session start.
 test_project_registry_lint_without_the_helper() {
-  local case_dir fakebin out
+  local case_dir fakebin out err
   case_dir="$TMP_ROOT/registry-no-helper"
   mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/root/bin"
   printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
   printf '%s\n' '- proj [no-mistakes +yolo] - fixture (added 2026-01-01)' > "$case_dir/home/data/projects.md"
   fakebin=$(make_fake_toolchain "$case_dir")
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/root" \
-    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>"$case_dir/stderr")
+  err=$(cat "$case_dir/stderr")
   [ -z "$out" ] || fail "registry lint must stay silent with no bin/fm-project-mode.sh, got: $out"
-  pass "bootstrap's registry lint stays silent when its bin/fm-project-mode.sh helper is absent"
+  case "$err" in
+    *fm-project-mode.sh*) fail "the missing lint helper leaked an error into session-start stderr: $err" ;;
+  esac
+  pass "bootstrap's registry lint stays silent - on stdout and stderr both - when its bin/fm-project-mode.sh helper is absent"
 }
 
 test_bootstrap_reporting

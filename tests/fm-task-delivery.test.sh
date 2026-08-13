@@ -185,11 +185,14 @@ ROWS
 
 # fm-spawn.sh reads the registered standing posture via
 # "fm-project-mode.sh --raw" to build the deviation notice above. It must not
-# discard that call's own warning when the registry line itself is malformed -
-# doing so would leave the deviation notice looking clean while the underlying
-# registry entry is silently defaulting for every other mechanical consumer too.
-test_spawn_does_not_swallow_a_malformed_registry_warning() {
+# discard that call's warning when the registry line itself is malformed - doing
+# so would leave the deviation notice looking clean while the underlying registry
+# entry is silently defaulting for every other mechanical consumer too - and it
+# must stay quiet for the two documented-normal states (no registry file at all,
+# and a project not registered yet), which would otherwise print on every spawn.
+test_spawn_reports_only_a_malformed_registry_warning() {
   local rec home proj fakebin out
+
   rec=$(make_home reg-warn "- proj [no-mistakes, +yolo] - fixture (added 2026-01-01)")
   IFS='|' read -r home proj fakebin <<EOF
 $rec
@@ -198,7 +201,77 @@ EOF
   out=$(run_spawn "$home" "$fakebin" delivery-regwarn "$proj" claude --mode no-mistakes --yolo off)
   assert_contains "$out" 'unknown mode "no-mistakes,"' \
     "fm-spawn.sh must surface fm-project-mode.sh's malformed-registry warning, not swallow it"
-  pass "fm-spawn: a malformed registry line's warning reaches spawn's own output"
+
+  rec=$(make_home reg-absent)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  assert_absent "$home/data/projects.md" "the no-registry fixture must have no registry at all"
+  write_brief "$home" delivery-regabsent no-mistakes
+  out=$(run_spawn "$home" "$fakebin" delivery-regabsent "$proj" claude --mode no-mistakes --yolo off)
+  assert_not_contains "$out" "no registry at" \
+    "an absent registry is a documented-normal state and must not print on every spawn"
+  assert_not_contains "$out" "registry-invalid" "an absent registry is not a malformed line"
+
+  rec=$(make_home reg-unregistered "- other [no-mistakes] - fixture (added 2026-01-01)")
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  write_brief "$home" delivery-regunreg no-mistakes
+  out=$(run_spawn "$home" "$fakebin" delivery-regunreg "$proj" claude --mode no-mistakes --yolo off)
+  assert_not_contains "$out" "not in registry" \
+    "an unregistered project is a documented-normal state and must not print on every spawn"
+  assert_not_contains "$out" "registry-invalid" "an unregistered project is not a malformed line"
+  pass "fm-spawn: a malformed registry line's warning reaches spawn's output while both documented-normal states stay quiet"
+}
+
+# bin/fm-project-mode.sh is the single owner of the registry grammar, so it - not
+# any caller - is what must recognize a malformed annotation. Every token inside
+# the brackets other than the mode and +yolo is unrecognized, and the mode token
+# being valid is not enough to call the line well formed. Callers select faults on
+# the "registry-invalid:" marker, so the two documented-normal states must warn
+# without it.
+test_project_mode_warns_on_every_malformed_annotation() {
+  local home name expect_out expect_warn out err
+  home="$TMP_ROOT/project-mode-annotation/home"
+  mkdir -p "$home/data"
+  cat > "$home/data/projects.md" <<'EOF'
+- okproj [no-mistakes +yolo] - fixture (added 2026-01-01)
+- flatproj [direct-PR] - fixture (added 2026-01-01)
+- legacyproj - fixture (added 2026-01-01)
+- extra [no-mistakes yolo on] - fixture (added 2026-01-01)
+- noplus [no-mistakes yolo] - fixture (added 2026-01-01)
+- typoflag [no-mistakes +yol] - fixture (added 2026-01-01)
+- badmode [no-mistakes, +yolo] - fixture (added 2026-01-01)
+EOF
+  while IFS='|' read -r name expect_out expect_warn; do
+    [ -n "$name" ] || continue
+    out=$(FM_HOME="$home" "$PROJECT_MODE" "$name" 2>/dev/null)
+    err=$(FM_HOME="$home" "$PROJECT_MODE" "$name" 2>&1 >/dev/null)
+    [ "$out" = "$expect_out" ] || fail "$name: resolved '$out', expected '$expect_out'"
+    case "$expect_warn" in
+      warn) assert_contains "$err" "registry-invalid:" "$name: a malformed annotation did not warn" ;;
+      quiet) [ -z "$err" ] || fail "$name: a well-formed line warned: $err" ;;
+    esac
+  done <<'ROWS'
+okproj|no-mistakes on|quiet
+flatproj|direct-PR off|quiet
+legacyproj|no-mistakes off|quiet
+extra|no-mistakes off|warn
+noplus|no-mistakes off|warn
+typoflag|no-mistakes off|warn
+badmode|no-mistakes off|warn
+ROWS
+
+  err=$(FM_HOME="$home" "$PROJECT_MODE" neverregistered 2>&1 >/dev/null)
+  assert_contains "$err" "not in registry" "an unregistered project stopped warning"
+  assert_not_contains "$err" "registry-invalid:" \
+    "an unregistered project must not be marked as a malformed line"
+  err=$(FM_HOME="$TMP_ROOT/project-mode-annotation/absent" "$PROJECT_MODE" anything 2>&1 >/dev/null)
+  assert_contains "$err" "no registry at" "an absent registry stopped warning"
+  assert_not_contains "$err" "registry-invalid:" \
+    "an absent registry must not be marked as a malformed line"
+  pass "fm-project-mode: every unrecognized annotation token warns under the registry-invalid marker and falls back to no-mistakes off, while well-formed lines and both documented-normal states stay unmarked"
 }
 
 # A scout's deliverable is a report, so it records no delivery posture at all;
@@ -294,8 +367,9 @@ test_ship_spawn_requires_a_valid_delivery_contract
 test_scout_and_secondmate_refuse_delivery_flags
 test_spawn_refuses_a_brief_mode_mismatch
 test_spawn_notices_a_rigor_downgrade_against_the_registry
-test_spawn_does_not_swallow_a_malformed_registry_warning
+test_spawn_reports_only_a_malformed_registry_warning
 test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract
 test_project_mode_maps_the_conditional_policy
+test_project_mode_warns_on_every_malformed_annotation
 echo "# all fm-task-delivery tests passed"
