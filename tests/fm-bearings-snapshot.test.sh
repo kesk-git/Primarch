@@ -24,7 +24,9 @@ make_fakebin() {  # <dir>
   cat > "$fb/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 [ "${FAKE_NM_SLEEP:-0}" = 1 ] && sleep 30
-exit 0
+# FAKE_NM_EXIT models the bounded call FAILING TO COMPLETE (124 = timed out),
+# which is what makes fm-crew-state.sh report the distinct `unreadable` state.
+exit "${FAKE_NM_EXIT:-0}"
 SH
   cat > "$fb/tmux" <<'SH'
 #!/usr/bin/env bash
@@ -515,6 +517,73 @@ test_bad_secondmate_homes_never_revive_parent_work() {
       and (.secondmates | any(.[]; .id == "timedout" and (.reason | contains("timed out"))))
   ' >/dev/null || fail "bad home outcomes revived stale work or lacked provenance: $json"
   pass "missing, invalid, unreadable, malformed, and timed-out homes stay explicit unknowns"
+}
+
+# `unreadable` is a state token fm-crew-state.sh emits for "the run source never
+# answered". Every consumer that ENUMERATES state tokens at its own site missed
+# it when it was introduced, and each miss turns an absence of measurement back
+# into a measured answer:
+#   - bin/fm-fleet-snapshot.sh's secondmate home summary counted only `unknown`
+#     as "child current state unavailable", so a home with an unmeasured child
+#     published as a VALID `no_active_work` home with no invalidity.
+#   - bin/fm-bearings-snapshot.sh's Underway list passes such a crew through
+#     unlabelled, presenting a crew nobody could read as self-progressing.
+# The ruling on the second is LABEL, not exclude: a crew nobody could measure is
+# precisely the row a reader must see.
+test_unreadable_child_state_is_never_published_as_measured() {
+  local home mate wt child_wt fakebin canonical json
+  home=$(make_home unreadable-state-token)
+  mate="$TMP_ROOT/unreadable-state-token-home"
+
+  # Main-home ship crew with a real branch and a LIVE endpoint, so the only
+  # thing missing is the run source's answer.
+  wt="$home/projects/ghost"
+  fm_git_init_commit "$wt"
+  git -C "$wt" checkout -q -b fm/ghost
+  printf '## In flight\n- [ ] ghost - Ghost lane (repo: sample) (kind: ship) (since 2026-07-13)\n\n## Queued\n\n## Done\n' \
+    > "$home/data/backlog.md"
+  fm_write_meta "$home/state/ghost.meta" \
+    "window=firstmate:fm-ghost" "worktree=$wt" "project=sample" \
+    "harness=claude" "kind=ship" "mode=no-mistakes"
+  record_claude_state "$home/state" ghost idle
+  printf 'working: was validating\n' > "$home/state/ghost.status"
+
+  # A registered secondmate home whose only child is in the same condition.
+  make_valid_secondmate_home unread "$mate"
+  child_wt="$mate/projects/unread-child"
+  fm_git_init_commit "$child_wt"
+  git -C "$child_wt" checkout -q -b fm/unread-child
+  printf '## In flight\n- [ ] unread-child - Unread child (repo: sample) (kind: ship) (since 2026-07-13)\n\n## Queued\n\n## Done\n' \
+    > "$mate/data/backlog.md"
+  fm_write_meta "$mate/state/unread-child.meta" \
+    "window=firstmate:fm-unread-child" "worktree=$child_wt" "project=sample" \
+    "harness=claude" "kind=ship" "mode=no-mistakes"
+  record_claude_state "$mate/state" unread-child idle
+  append_secondmate_registry "$home" unread "$mate"
+
+  fakebin=$(make_fakebin "$home")
+  canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
+    FAKE_NM_EXIT=124 "$ROOT/bin/fm-fleet-snapshot.sh" --json)
+
+  printf '%s' "$canonical" | jq -e '
+    (.tasks[] | select(.id == "ghost") | .current_state.state == "unreadable")
+  ' >/dev/null || fail "the fixture did not produce an unreadable crew state: $canonical"
+
+  printf '%s' "$canonical" | jq -e '
+    .secondmate_current.records[] | select(.id == "unread")
+    | .current.state == "unknown"
+      and (.current.reason | contains("child current state unavailable: unread-child"))
+      and .invalidity == {kind:"child_current_unavailable",ids:["unread-child"]}
+  ' >/dev/null || fail "an unmeasured child made its home publish as valid: $canonical"
+
+  json=$(FAKE_NM_EXIT=124 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.in_flight | any(.[]; .id == "ghost"))
+      and (.in_flight[] | select(.id == "ghost")
+           | .state == "unreadable"
+             and (.doing | startswith("state could not be read, not confirmed progressing")))
+  ' >/dev/null || fail "Underway presented an unmeasured crew without labelling it: $json"
+  pass "an unreadable crew invalidates its home summary and is labelled, not asserted, in Underway"
 }
 
 test_oversized_secondmate_summary_stays_strict_unknown() {
@@ -1921,6 +1990,7 @@ test_parent_activity_evidence_is_bounded_and_disclosed
 test_active_child_overrides_old_parent_event
 test_structured_child_decision_reaches_captains_call
 test_bad_secondmate_homes_never_revive_parent_work
+test_unreadable_child_state_is_never_published_as_measured
 test_oversized_secondmate_summary_stays_strict_unknown
 test_secondmate_and_child_bounds_are_disclosed
 test_parent_decision_is_untrusted_contradiction_only

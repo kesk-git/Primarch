@@ -667,7 +667,12 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
             report_path:((.report_path // null) | if . == null then null else trunc(500) end),
             local_note:((.local_note // null) | if . == null then null else trunc(120) end),completion} ]
        | sort_by([(.completion.date // ""), .id]) | reverse) as $landed_all
-    | ([ $tasks[] | select(.current_state.state == "unknown") ]) as $unknown_children
+    # Both tokens mean the current state of a child could not be determined, and
+    # neither may make this home read valid: unknown is a state nobody could
+    # resolve, unreadable is a run source that never answered. Publishing either
+    # as a validated no_active_work home asserts a measured absence of work
+    # about a crew nobody measured.
+    | ([ $tasks[] | select(.current_state.state == "unknown" or .current_state.state == "unreadable") ]) as $unknown_children
     | ([ $owned_in_flight[]
          | select(.requires_child_metadata)
          | select(.id as $id | [$tasks[].id] | index($id) | not) ]) as $orphan_in_flight

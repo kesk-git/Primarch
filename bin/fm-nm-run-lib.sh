@@ -55,6 +55,28 @@ fm_nm_field() {  # <toon-output> <key>
   printf '%s\n' "$1" | sed -n "s/^[[:space:]]*$2:[[:space:]]*\(.*\)/\1/p" | head -1
 }
 
+# Coarse `no-mistakes runs` status words that mean the pipeline is STILL RUNNING
+# this row. ONE owner for that vocabulary, because attribution treats a live run
+# and a finished one differently: a live run for the crew's branch is the crew's
+# run, while a finished row must still prove code identity before it is
+# attributed (see fm-crew-state.sh's nm_runs_status_for_branch).
+fm_nm_status_is_active() {  # <status-word>
+  case "$1" in
+    running|pending) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Run statuses that mean the pipeline has FINISHED with the run. The complement
+# is not simply "active": a run parked at a gate is neither, and must still be
+# attributed (it is live) while never being mistaken for a completed one.
+fm_nm_status_is_terminal() {  # <status-word>
+  case "$1" in
+    completed|passed|checks-passed|failed|cancelled) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # 0 if run head $2 matches worktree $1's code identity, per the same rule
 # everywhere this attribution is needed:
 #   - missing/empty head: cannot bind; reject
@@ -63,6 +85,17 @@ fm_nm_field() {  # <toon-output> <key>
 #     the same history advanced the run tip past local HEAD)
 #   - run head is a strict ancestor of worktree HEAD, or diverged: no match
 #     (local work advanced outside the run, or the branch tip was rewritten)
+#
+# NOTE the deliberate limit of this rule, and why callers must not treat a
+# non-match as "no run": the pipeline runs each step in its OWN clone
+# (~/.no-mistakes/repos/<id>.git), which is a SEPARATE object store from the
+# crew worktree's. Every mid-run fix commit therefore advances the run head to a
+# commit this worktree cannot even resolve, so `rev-parse --verify` fails and
+# this returns 1 while the run is at its healthiest. That is a limit of code
+# IDENTITY, not evidence about the run's existence, and it self-heals only once
+# the branch is pushed back - which is why post-hoc forensics finds the same sha
+# perfectly resolvable. Attribution callers must decide liveness first and use
+# this only to disambiguate FINISHED rows.
 fm_nm_head_matches_worktree() {  # <worktree> <run_head>
   local wt=$1 run_head=$2 local_full run_full
   [ -n "$run_head" ] || return 1

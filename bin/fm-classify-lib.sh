@@ -612,8 +612,16 @@ signal_reason_is_actionable() {  # <file> ...
 #             (e.g. waiting on CI);
 #   paused  - the crew's authoritative current state is a declared external-wait
 #             pause (paused:), which is EXPECTED to idle;
+#   unreadable - the current state could not be determined at all (the run source
+#             did not answer, or the verdict itself was unusable). NOT a synonym
+#             for `none`: `none` is the measured fact that the crew is stopped or
+#             finished, while this is the ABSENCE of a measurement. Both surface,
+#             but only this one must never be reported as a fact about the crew,
+#             and neither may ever be absorbed.
 #   none    - neither, so the wake must surface (a stopped/finished/parked/failed/
-#             torn-down/unknown crew, or an unreadable verdict).
+#             torn-down/unknown crew).
+# Absorb decisions read this ONE function, so the working/paused/unreadable/none
+# distinction cannot be re-derived - or quietly re-collapsed - at a call site.
 # One fm-crew-state.sh read serves BOTH absorb reasons at once. Reading the state
 # authoritatively (not the status log) is what keeps run-step precedence: a crew
 # that appended paused: but then STARTED a run reports working, never paused.
@@ -621,17 +629,90 @@ signal_reason_is_actionable() {  # <file> ...
 # run it only on no-verb signal and first-sighting stale paths, never every wake.
 # FM_CREW_STATE_BIN lets tests stub the verdict.
 crew_absorb_class() {  # <id>
-  local id=$1 line state src
-  [ -n "$id" ] || { printf 'none'; return; }
+  local verdict
+  verdict=$(crew_absorb_verdict "$1")
+  printf '%s' "${verdict%% *}"
+}
+
+# ONE fm-crew-state.sh read, rendered as the two tokens every absorb decision is
+# made from: "<class> <source>", where <class> is crew_absorb_class's verdict and
+# <source> is the crew-state line's own source token (run-step, pane, status-log,
+# run-source, none). A caller that needs more than one fact about the same moment
+# reads this once and splits it: each read is a subprocess that may make its own
+# bounded no-mistakes call, so a second one both doubles the poll-loop stall and
+# can disagree with the first about a crew whose state changed in between.
+crew_absorb_verdict() {  # <id>
+  local id=$1 line state src=none
+  [ -n "$id" ] || { printf 'unreadable none'; return; }
   line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
-  case "$line" in state:*) ;; *) printf 'none'; return ;; esac
+  # An unparseable verdict is an absence of measurement, not a stopped crew.
+  case "$line" in state:*) ;; *) printf 'unreadable none'; return ;; esac
   state=${line#state: }; state=${state%% *}
-  if [ "$state" = paused ]; then printf 'paused'; return; fi
-  if [ "$state" = working ]; then
-    src=${line#*source: }; src=${src%% *}
-    case "$src" in run-step|pane) printf 'working'; return ;; esac
-  fi
-  printf 'none'
+  case "$line" in *'source: '*) src=${line#*source: }; src=${src%% *} ;; esac
+  case "$state" in
+    unreadable) printf 'unreadable %s' "$src"; return ;;
+    paused)     printf 'paused %s' "$src"; return ;;
+    working)
+      case "$src" in run-step|pane) printf 'working %s' "$src"; return ;; esac
+      ;;
+  esac
+  printf 'none %s' "$src"
+}
+
+# 0 when a wedge alarm may be absorbed because a run the PIPELINE owns is live on
+# this crew. The wedge guard needs this narrower question than "provably
+# working": an active run is owned by no-mistakes and legitimately idles the pane
+# for its whole duration, whereas a busy pane is the crew's own foreground work
+# and stays bounded by BUSY_TURN_MAX_SECS - absorbing on a busy pane would defeat
+# that bound, the only one that catches a hung foreground tool call.
+#
+# Both arguments are required because NEITHER answers the question alone.
+# <verdict> comes from one crew_absorb_verdict read; <pane> is crew_pane_token's
+# rendering of the caller's OWN observation of that same pane in that same poll.
+# fm-crew-state.sh decides the run-step verdict BEFORE it ever reads the pane, so
+# a busy pane whose branch has a live run reports `working - run-step`
+# byte-identically to an idle one: deciding on the source token alone would
+# silence exactly the wedged pane this guard exists to catch. The asymmetry is
+# the point - a provably idle pane under a live run is that run's normal shape,
+# a busy pane past its turn bound never is.
+#
+# <pane> must POSITIVELY be `idle`. Absorbing on "anything that is not busy"
+# reads an UNPROVEN pane - unknown, dead, malformed, or no record at all - as a
+# measured idle, which is the same absence-reported-as-measurement defect the
+# crew-state line exists to prevent. Requiring the positive token also means a
+# caller that passes a stale, empty, or misspelled value fails SAFE into
+# escalating instead of silently absorbing.
+#
+# What this does NOT catch, stated because the opposite is easy to assume: a
+# claude agent that EXITS still classifies `idle`, because bin/fm-spawn.sh wires
+# its SessionEnd hook to write `idle --source claude-hook` precisely so no stale
+# busy record survives a shutdown (verified by reproduction: an armed gen plus a
+# session-end idle record yields `idle claude-hook`). So the twice-reproduced
+# 2026-08-13 shape - an exited agent under a still-live pipeline run - is
+# absorbed here exactly as before. Detecting an exited agent is the separately
+# deferred fm-exited-agent-reads-working item, not something this guard closes.
+crew_run_is_active() {  # <verdict> <pane>
+  [ "$2" = idle ] || return 1
+  [ "$1" = "working run-step" ]
+}
+
+# The pane half of that decision, rendered from a bin/fm-busy-lib.sh verdict
+# line ("<busy|idle|unknown|dead> <source>"). THREE outcomes, never two:
+#   busy     - PROVABLY working; the crew's own foreground work, still bounded by
+#              BUSY_TURN_MAX_SECS, so it must never be absorbed;
+#   idle     - an EXACT idle verdict, i.e. a measurement of a live-but-quiet pane;
+#   unproven - everything else (unknown, dead, malformed, stale, missing record).
+# `idle` and `unproven` are deliberately NOT one token. Collapsing them is the
+# same absence-reported-as-measurement defect the crew-state line exists to
+# prevent, and both producing arms in this repo (bin/fm-watch.sh's
+# window_is_busy and bin/fm-supervise-daemon.sh's stale_window_is_busy) are
+# boolean "provably busy?" tests whose false branch covers both.
+crew_pane_token() {  # <busy-verdict>
+  case "${1%% *}" in
+    busy) printf 'busy' ;;
+    idle) printf 'idle' ;;
+    *)    printf 'unproven' ;;
+  esac
 }
 
 # 0 if crew <id> shows POSITIVE evidence it is still working (crew_absorb_class

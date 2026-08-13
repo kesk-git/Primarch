@@ -41,11 +41,16 @@
 #     drain and acknowledges it only after routing completes.
 #   - Fail-safe-to-escalate: any wake the classifier cannot confidently mark
 #     routine is escalated.
-#   - Bounded wedge latency: a stale pane without a declared external wait is
+#   - Bounded wedge latency: a stale pane without a declared external wait, and
+#     without a live pipeline-owned run, is
 #     escalated only after it has been idle for STALE_ESCALATE_SECS
 #     (configurable), rechecked once. A wedged crewmate is therefore detected
 #     within STALE_ESCALATE_SECS + a tick, never lost. A declared pause instead
-#     gets its own longer PAUSE_RESURFACE_SECS recheck, never a wedge escalation.
+#     gets its own longer PAUSE_RESURFACE_SECS recheck, never a wedge escalation,
+#     and a MEASURED-idle pane under a run no-mistakes still owns is absorbed on
+#     the same shared predicate the always-on watcher uses, so away mode cannot
+#     re-raise the false alarm the watcher stopped raising. A pane whose busy
+#     state could not be classified is not a measured idle and still escalates.
 #     Crewmates are autonomous, so a delayed stale response does not stall a
 #     healthy crewmate's own progress.
 #     Buffered escalation delivery also has a max-defer alarm: if a digest stays
@@ -88,7 +93,8 @@
 #                                   captain-relevant escalation for matching
 #                                   kinds.
 #          FM_STALE_ESCALATE_SECS   idle seconds before a stale pane escalates
-#                                   as a possible wedge (default 240)
+#                                   as a possible wedge, unless a live
+#                                   pipeline-owned run absorbs it (default 240)
 #          FM_PAUSE_RESURFACE_SECS  idle seconds before a declared external wait
 #                                   re-surfaces as a recheck (default 3600)
 #          FM_ESCALATE_BATCH_SECS   buffer window for batched escalation
@@ -621,14 +627,26 @@ task_window_harness() {  # <window> <state>
 # when the endpoint could not be read at all. Only an exact busy verdict is
 # working: unknown semantic state never becomes busy and never becomes a
 # silent idle, so a stale pane whose state cannot be proven surfaces.
-stale_window_is_busy() {  # <window> <state>
+#
+# The 1 branch deliberately covers BOTH an exact idle verdict and an unprovable
+# one, which is right for "should this surface?" but NOT enough for any caller
+# that needs to know a pane was measured idle. Such a caller reads
+# STALE_PANE_TOKEN, set on every path (including the unreadable-endpoint
+# return) to fm-classify-lib.sh's three-way busy/idle/unproven token, so the two
+# facts the boolean merges stay separable. Reported through an out-parameter for
+# the same reason nm_runs_status_for_branch does: a command substitution would
+# trap it in a subshell.
+STALE_PANE_TOKEN=unproven
+stale_window_is_busy() {  # <window> <state>  -> also sets STALE_PANE_TOKEN
   local win=$1 state=$2 backend harness label task tail40 verdict
+  STALE_PANE_TOKEN=unproven
   backend=$(task_window_backend "$win" "$state")
   harness=$(task_window_harness "$win" "$state")
   task=$(window_to_task "$win" "$state")
   label="fm-$task"
   tail40=$(fm_backend_capture "$backend" "$win" 40 "$label" 2>/dev/null) || return 2
   verdict=$(fm_busy_classify "$backend" "$win" "$harness" "$task" "$state" "$tail40")
+  STALE_PANE_TOKEN=$(crew_pane_token "$verdict")
   [ "${verdict%% *}" = busy ]
 }
 
@@ -952,7 +970,10 @@ _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first ar
 #     attempt one normal delivery; if it cannot confirm, raise the wedge alarm.
 #     Never silently defer forever.
 #  2) stale recheck: for each pending stale marker past STALE_ESCALATE_SECS,
-#     re-peek the pane; still idle -> escalate (wedge); resumed -> clear marker.
+#     re-peek the pane; resumed -> clear marker; still idle -> escalate (wedge),
+#     UNLESS the shared absorb owner reports a live pipeline-owned run AND the
+#     pane was MEASURED idle, in which case the quiet pane is that run's normal
+#     shape and the marker is reset; an unclassifiable pane still escalates.
 #  2b) pause re-surface: for each declared-pause marker past PAUSE_RESURFACE_SECS,
 #     re-peek; busy/gone -> clear; still idle + still paused -> escalate a recheck
 #     digest and reset the window (repeating bounded re-surface, never a wedge).
@@ -1016,8 +1037,28 @@ housekeeping() {  # <state>
     case "$?" in
       0) rm -f "$marker" ;;
       2) rm -f "$marker" ;;
-      *) escalate_add "$state" "stale persisted ${age}s (possible wedge): $win"
-         stale_marker_remove "$win" "$state" ;;
+      # Reached when the pane is NOT provably busy, which merges two different
+      # facts: a measured idle - the normal shape of a crew whose pipeline-owned
+      # run is still going, since no-mistakes owns it for the run's duration -
+      # and a pane nobody could measure. STALE_PANE_TOKEN keeps them apart and
+      # only the measured idle absorbs, so an absence of measurement is never
+      # spent as one. It does NOT follow that an exited agent now alarms here: a
+      # claude agent that shuts down writes an `idle` record through its
+      # SessionEnd hook, so that crew still absorbs, and catching it is the
+      # separately deferred fm-exited-agent-reads-working item. The watcher
+      # exempts the same measured-idle case at its own wedge timer, and away mode must not
+      # re-raise the alarm the watcher just stopped raising, so the SAME shared
+      # owner decides here. Resetting the marker instead of dropping it keeps the
+      # pane tracked, so the window after the run stops escalates promptly - and
+      # the marker is keyed by task, not pane hash, so a slowly-redrawing pane
+      # reuses this one marker instead of re-alarming.
+      *) if crew_run_is_active "$(crew_absorb_verdict "$task")" "$STALE_PANE_TOKEN"; then
+           _now > "$marker"
+           log "absorb stale persistence (pipeline-owned run active, not a wedge): $win"
+         else
+           escalate_add "$state" "stale persisted ${age}s (possible wedge): $win"
+           stale_marker_remove "$win" "$state"
+         fi ;;
     esac
   done
 
@@ -1214,8 +1255,15 @@ handle_wake() {  # <reason> <state>
     stale:*)  kind=stale; arg="${reason#stale: }"; stale_detail="${arg#"$arg"}"
               case "$arg" in *" ("*) stale_detail="${arg#*" ("}"; arg="${arg%% \(*}" ;; esac
               decision=$(classify_stale "$arg" "$state")
+              # bin/fm-watch.sh's wedge timer already decided this pane needs a
+              # look and stamped the window count into the reason. Match that
+              # ESCALATION MARKER, not the prose that happens to precede it:
+              # the same timer emits a different verdict phrase when the crew's
+              # state could not be read at all, and matching prose silently
+              # self-handled exactly the wake meaning "nobody could measure this
+              # crew". No other stale reason carries the marker.
               case "$stale_detail" in
-                idle\ *s,\ possible\ wedge,\ escalation\ *)
+                *,\ escalation\ [0-9]*)
                   decision="escalate|${reason#stale: }" ;;
               esac ;;
     check:*)  decision=$(classify_check "$reason") ;;
