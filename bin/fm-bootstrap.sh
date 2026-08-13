@@ -10,7 +10,8 @@
 #                 "BACKEND_INVALID: <name> (known: <names>)",
 #                 "STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>",
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
-#                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK: <detail>",
+#                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK|registry-invalid: <detail>",
+#                 "PROJECT_REGISTRY: <name>: <warning> - line: \"<raw line>\" - expected: <format>",
 #                 "PR_CHECK_MIGRATION: <private remediation>",
 #                 "TANGLE: <remediation>",
 #                 "SECONDMATE_SYNC: secondmate <id>: skipped: <reason>",
@@ -221,6 +222,7 @@ fleet_sync_relay_filtered_output() {
       *': skipped:'*) echo "FLEET_SYNC: $line" ;;
       *': STUCK:'*) echo "FLEET_SYNC: $line" ;;
       *': recovered:'*) echo "FLEET_SYNC: $line" ;;
+      *': registry-invalid:'*) echo "FLEET_SYNC: $line" ;;
     esac
   done < "$tmp"
 }
@@ -1082,6 +1084,28 @@ crew_dispatch_validate() {
   fi
 }
 
+# Cheap round-trip lint over the whole registry, so a malformed or unknown
+# registry line is diagnosed regardless of whether that project is cloned
+# locally or ever touched by fleet_sync's own per-clone check. Reuses
+# bin/fm-project-mode.sh as the single owner of the registry format and its
+# warning text (AGENTS.md "one-owner rule"); this never re-parses the format
+# itself. A healthy registry stays silent.
+project_registry_lint() {
+  local reg="$DATA/projects.md" line name warn
+  [ -f "$reg" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "- "*) ;;
+      *) continue ;;
+    esac
+    name=$(printf '%s\n' "$line" | awk '{print $2}')
+    [ -n "$name" ] || continue
+    warn=$(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$FM_ROOT/bin/fm-project-mode.sh" --raw "$name" 2>&1 >/dev/null || true)
+    [ -n "$warn" ] || continue
+    echo "PROJECT_REGISTRY: $name: $(printf '%s' "$warn" | tr '\n' ' ' | sed 's/[[:space:]]*$//') - line: \"$line\" - expected: - $name [<mode> +yolo] - <desc> (added <date>)"
+  done < "$reg"
+}
+
 startup_memory_budget_setup() {
   # Primary bootstrap owns default publication. A secondmate is deliberately
   # passive here because its setting must converge from the primary through the
@@ -1176,6 +1200,7 @@ detect_local_config() {
     echo "BOOTSTRAP_INFO: crew harness override active: $crew"
   fi
   crew_dispatch_validate
+  project_registry_lint
   if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ] \
     && ! fm_backlog_backend_manual "$CONFIG" && fm_tasks_axi_compatible; then
     echo "BOOTSTRAP_INFO: tasks-axi available"

@@ -183,6 +183,24 @@ ROWS
   pass "fm-spawn: a rigor downgrade against the registered posture is announced, never blocked"
 }
 
+# fm-spawn.sh reads the registered standing posture via
+# "fm-project-mode.sh --raw" to build the deviation notice above. It must not
+# discard that call's own warning when the registry line itself is malformed -
+# doing so would leave the deviation notice looking clean while the underlying
+# registry entry is silently defaulting for every other mechanical consumer too.
+test_spawn_does_not_swallow_a_malformed_registry_warning() {
+  local rec home proj fakebin out
+  rec=$(make_home reg-warn "- proj [no-mistakes, +yolo] - fixture (added 2026-01-01)")
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  write_brief "$home" delivery-regwarn no-mistakes
+  out=$(run_spawn "$home" "$fakebin" delivery-regwarn "$proj" claude --mode no-mistakes --yolo off)
+  assert_contains "$out" 'unknown mode "no-mistakes,"' \
+    "fm-spawn.sh must surface fm-project-mode.sh's malformed-registry warning, not swallow it"
+  pass "fm-spawn: a malformed registry line's warning reaches spawn's own output"
+}
+
 # A scout's deliverable is a report, so it records no delivery posture at all;
 # teardown already treats an absent mode as the most protective one.
 test_scout_records_no_delivery_posture() {
@@ -276,6 +294,7 @@ test_ship_spawn_requires_a_valid_delivery_contract
 test_scout_and_secondmate_refuse_delivery_flags
 test_spawn_refuses_a_brief_mode_mismatch
 test_spawn_notices_a_rigor_downgrade_against_the_registry
+test_spawn_does_not_swallow_a_malformed_registry_warning
 test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract
 test_project_mode_maps_the_conditional_policy

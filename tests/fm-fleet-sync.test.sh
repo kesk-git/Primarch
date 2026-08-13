@@ -370,6 +370,44 @@ test_local_only_skipped() {
   pass "local-only clone is skipped (benign), not flagged STUCK"
 }
 
+test_malformed_registry_line_is_reported_not_swallowed() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_pair "$home" reginvalid)
+  advance_origin "$home" reginvalid C1
+  mkdir -p "$home/data"
+  # A comma after the mode token makes "no-mistakes," an unknown mode, so
+  # bin/fm-project-mode.sh warns and falls back to "no-mistakes off" - the
+  # exact malformed shape this test pins.
+  printf -- '- reginvalid [no-mistakes, +yolo] - test project (added 2026-06-27)\n' > "$home/data/projects.md"
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "reginvalid: registry-invalid:" \
+    "a malformed registry line must be reported, not silently swallowed"
+  assert_contains "$out" "expected: - reginvalid [<mode> +yolo]" \
+    "the registry-invalid report must name the expected format"
+  # Sync itself still proceeds under the fallback default (mode is not
+  # local-only), so the clone is not skipped outright.
+  assert_contains "$out" "reginvalid: synced" "sync still proceeds under the fallback default"
+  pass "a malformed registry line is reported as registry-invalid, and sync still proceeds"
+}
+
+test_healthy_registry_line_stays_quiet() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_pair "$home" reghealthy)
+  advance_origin "$home" reghealthy C1
+  mkdir -p "$home/data"
+  printf -- '- reghealthy [no-mistakes +yolo] - test project (added 2026-06-27)\n' > "$home/data/projects.md"
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_not_contains "$out" "registry-invalid" \
+    "a well-formed registry line must not be reported"
+  pass "a well-formed registry line produces no registry-invalid report"
+}
+
 test_single_project_by_bare_name_resolves() {
   local home out
   home=$(new_home)
@@ -468,6 +506,21 @@ test_bootstrap_relays_recovered_and_stuck() {
   assert_contains "$out" "FLEET_SYNC: stuck-clone: STUCK:" "bootstrap relays the STUCK outcome"
   assert_contains "$out" "FLEET_SYNC: rec-clone: recovered:" "bootstrap relays the recovered outcome"
   pass "bootstrap relays recovered: and STUCK: fleet-sync outcomes"
+}
+
+test_bootstrap_relays_registry_invalid() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_pair "$home" xi-clone)
+  advance_origin "$home" xi-clone C1
+  mkdir -p "$home/data"
+  printf -- '- xi-clone [no-mistakes, +yolo] - test project (added 2026-06-27)\n' > "$home/data/projects.md"
+
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+
+  assert_contains "$out" "FLEET_SYNC: xi-clone: registry-invalid:" \
+    "bootstrap relays a malformed registry line for a synced clone"
+  pass "bootstrap relays a registry-invalid fleet-sync outcome"
 }
 
 # --- packed-refs.lock guard tests -------------------------------------------
@@ -613,6 +666,8 @@ test_on_default_clean_behind_fast_forwards
 test_already_current_unchanged
 test_no_origin_skipped
 test_local_only_skipped
+test_malformed_registry_line_is_reported_not_swallowed
+test_healthy_registry_line_stays_quiet
 test_single_project_by_bare_name_resolves
 test_single_project_by_bare_name_ignores_cwd_shadow
 test_single_project_by_projects_relative_name_resolves
@@ -620,6 +675,7 @@ test_single_project_by_projects_relative_name_ignores_cwd_shadow
 test_single_project_unresolvable_name_still_skips
 test_whole_fleet_form
 test_bootstrap_relays_recovered_and_stuck
+test_bootstrap_relays_registry_invalid
 test_orphaned_stale_packed_refs_lock_recovers
 test_live_packed_refs_lock_is_never_removed
 test_live_git_cwd_in_clone_dir_blocks_removal

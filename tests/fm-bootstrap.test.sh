@@ -1146,6 +1146,47 @@ ROWS
   pass "bootstrap validates crew-dispatch.json and reports malformed or unverified configs"
 }
 
+# The registry lint is the comprehensive AC2 diagnostic: it walks every line in
+# data/projects.md directly, so it fires for a malformed or unknown line
+# regardless of whether that project is ever cloned under projects/ (unlike
+# fleet_sync's own registry-invalid report, which only sees clones it syncs).
+# A healthy registry - or no registry at all - must stay silent.
+test_project_registry_lint() {
+  local label body expect mode case_dir fakebin out n
+  n=0
+  while IFS='^' read -r label body mode expect; do
+    [ -n "$label" ] || continue
+    n=$((n + 1))
+    case_dir="$TMP_ROOT/registry-$n"
+    mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/root/bin"
+    # project_registry_lint shells out to "$FM_ROOT/bin/fm-project-mode.sh" (the
+    # single owner of the registry format), so the fake FM_ROOT needs that one
+    # real script present; it stays a non-git directory otherwise so the
+    # worktree-tangle check (which also reads FM_ROOT) stays silent, same as
+    # test_crew_dispatch_validation's fake root above.
+    cp "$ROOT/bin/fm-project-mode.sh" "$case_dir/root/bin/fm-project-mode.sh"
+    printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+    if [ "$body" != "-" ]; then
+      printf '%s\n' "$body" > "$case_dir/home/data/projects.md"
+    fi
+    fakebin=$(make_fake_toolchain "$case_dir")
+    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/root" \
+      FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+    case "$mode" in
+      empty) [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
+      grep) printf '%s\n' "$out" | grep -F -- "$expect" >/dev/null || fail "$label: missing '$expect' (got: $out)" ;;
+    esac
+  done <<'ROWS'
+no registry at all stays silent^-^empty^
+well-formed line stays silent^- proj [no-mistakes +yolo] - fixture (added 2026-01-01)^empty^
+malformed mode (trailing comma) is flagged, project named^- proj [no-mistakes, +yolo] - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: proj:
+malformed mode is flagged with the offending line quoted^- proj [no-mistakes, +yolo] - fixture (added 2026-01-01)^grep^line: "- proj [no-mistakes, +yolo] - fixture (added 2026-01-01)"
+malformed mode is flagged with the expected format^- proj [no-mistakes, +yolo] - fixture (added 2026-01-01)^grep^expected: - proj [<mode> +yolo]
+unknown mode is flagged even though the project is never cloned^- uncloned [nope] - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: uncloned:
+ROWS
+  pass "bootstrap's registry lint flags an unparseable or unknown registry line - naming the project, the offending line, and the expected format - and a healthy registry (or none at all) stays silent"
+}
+
 test_bootstrap_reporting
 test_no_mistakes_min_version
 test_gh_axi_min_version
@@ -1174,3 +1215,4 @@ test_network_phases_record_per_step_elapsed_times
 test_tasks_axi_verdict_handoff_is_consumed_once
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info
 test_crew_dispatch_validation
+test_project_registry_lint
