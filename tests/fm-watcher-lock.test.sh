@@ -161,6 +161,45 @@ test_lock_root_removed_mid_acquire_fails_instead_of_spinning() {
   pass "acquisition fails on a removed lock root and still waits out a live holder"
 }
 
+test_lock_self_held_wait_fails_instead_of_deadlocking() {
+  # A lock this very process already holds is never released by waiting for it:
+  # the only shell that could release it is the one blocked in the wait. That
+  # is not hypothetical. A trap runs between commands, so a TERM taken inside
+  # the recovery-marker critical section leaves the marker lock held and jumps
+  # straight to the watcher's EXIT-path transition, which acquires that same
+  # lock again - and waited at 0.1s forever. The watcher then survived every
+  # signal, holding the singleton lock and the stdout of whoever started it;
+  # in CI that wedged the whole shard behind one unkillable process.
+  local dir state rc live
+  dir=$(make_case lock-self-held)
+  state="$dir/state"
+
+  rc=0
+  # shellcheck disable=SC2016 # Positional parameters expand inside the child bash, not here.
+  fm_run_timed 30 env FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$2" || exit 3
+    fm_recovery_transition "$3" release-lock "$4" downtime
+  ' _ "$LIB" "$state/.watcher-down.lock" "$state/.watcher-down" \
+    "$state/.watch.lock" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -ne 124 ] || fail "the EXIT-path recovery transition never returned while this process still held the marker lock"
+  [ "$rc" -ne 3 ] || fail "the case could not take the marker lock it needs to hold"
+  [ "$rc" -ne 0 ] || fail "the transition reported success for a marker lock it could not have taken"
+
+  # Adversarial: only the waiter's OWN hold is hopeless. A live holder that is
+  # some other process is ordinary contention and must still be waited out.
+  sleep 300 &
+  live=$!
+  mkdir "$state/.other.lock"
+  printf '%s\n' "$live" > "$state/.other.lock/pid"
+  rc=0
+  acquire_wait_bounded 3 "$state" "$state/.other.lock" || rc=$?
+  kill "$live" 2>/dev/null || true
+  wait "$live" 2>/dev/null || true
+  [ "$rc" -eq 124 ] || fail "wait abandoned a lock held by a live other process instead of waiting (rc=$rc)"
+  pass "a lock the waiting process already holds fails the wait instead of deadlocking it"
+}
+
 test_live_stale_watch_lock_is_actionable() {
   local dir state fakebin out err status
   dir=$(make_case live-stale-lock)
@@ -1278,6 +1317,7 @@ fm_test_run_cases \
   test_stale_watch_lock_reclaimed \
   test_stale_watch_reclaim_publishes_before_clear \
   test_lock_root_removed_mid_acquire_fails_instead_of_spinning \
+  test_lock_self_held_wait_fails_instead_of_deadlocking \
   test_live_stale_watch_lock_is_actionable \
   test_guard_warnings \
   test_lock_single_winner_under_concurrency \
