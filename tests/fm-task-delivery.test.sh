@@ -233,7 +233,7 @@ EOF
 # faults on the "registry-invalid:" marker, so the two documented-normal states
 # must warn without it.
 test_project_mode_warns_on_every_malformed_annotation() {
-  local home name expect_out expect_warn out err
+  local home name expect_out expect_warn expect_clause out err
   home="$TMP_ROOT/project-mode-annotation/home"
   mkdir -p "$home/data"
   cat > "$home/data/projects.md" <<'EOF'
@@ -264,38 +264,53 @@ EOF
   # editor or formatter that strips trailing whitespace from this test file.
   printf -- '- trailspace [no-mistakes, +yolo] - fixture (added 2026-01-01) \n' >> "$home/data/projects.md"
   printf -- '- crlfline [no-mistakes, +yolo] - fixture (added 2026-01-01)\r\n' >> "$home/data/projects.md"
-  while IFS='|' read -r name expect_out expect_warn; do
+  while IFS='|' read -r name expect_out expect_warn expect_clause; do
     [ -n "$name" ] || continue
     out=$(FM_HOME="$home" "$PROJECT_MODE" "$name" 2>/dev/null)
     err=$(FM_HOME="$home" "$PROJECT_MODE" "$name" 2>&1 >/dev/null)
     [ "$out" = "$expect_out" ] || fail "$name: resolved '$out', expected '$expect_out'"
     case "$expect_warn" in
-      warn) assert_contains "$err" "registry-invalid:" "$name: a malformed annotation did not warn" ;;
+      warn)
+        assert_contains "$err" "registry-invalid:" "$name: a malformed annotation did not warn"
+        # The warning has to name the posture the line actually resolved to. A
+        # fault that left a recognized mode standing must not claim the standing
+        # default, or an operator reads a walled-off local-only project as having
+        # become push-eligible. The expected clause comes from the row, not from
+        # the resolved mode: "keeping no-mistakes" and a real fallback to the
+        # standing default both resolve to no-mistakes.
+        assert_contains "$err" "$expect_clause" \
+          "$name: the warning does not name the posture it resolved to"
+        case "$expect_clause" in
+          keeping*)
+            assert_not_contains "$err" "defaulting to no-mistakes off" \
+              "$name: the warning contradicts the mode it kept" ;;
+        esac
+        ;;
       quiet) [ -z "$err" ] || fail "$name: a well-formed line warned: $err" ;;
     esac
   done <<'ROWS'
-okproj|no-mistakes on|quiet
-plainproj|no-mistakes off|quiet
-flatproj|direct-PR off|quiet
-localproj|local-only off|quiet
-legacyproj|no-mistakes off|quiet
-yoloonly|no-mistakes on|quiet
-commaform|no-mistakes off|warn
-extra|no-mistakes off|warn
-noplus|no-mistakes off|warn
-typoflag|no-mistakes off|warn
-badmode|no-mistakes off|warn
-outsideyolo|no-mistakes off|warn
-outsidepair|direct-PR off|warn
-emptyann|no-mistakes off|warn
-loyolo|local-only off|warn
-lodup|local-only off|warn
-looutside|local-only off|warn
-unknownmode|no-mistakes off|warn
-yolotwice|no-mistakes off|warn
-yolothenmode|no-mistakes off|warn
-trailspace|no-mistakes off|warn
-crlfline|no-mistakes off|warn
+okproj|no-mistakes on|quiet|
+plainproj|no-mistakes off|quiet|
+flatproj|direct-PR off|quiet|
+localproj|local-only off|quiet|
+legacyproj|no-mistakes off|quiet|
+yoloonly|no-mistakes on|quiet|
+commaform|no-mistakes off|warn|defaulting to no-mistakes off
+extra|no-mistakes off|warn|keeping no-mistakes, defaulting yolo to off
+noplus|no-mistakes off|warn|keeping no-mistakes, defaulting yolo to off
+typoflag|no-mistakes off|warn|keeping no-mistakes, defaulting yolo to off
+badmode|no-mistakes off|warn|defaulting to no-mistakes off
+outsideyolo|no-mistakes off|warn|keeping no-mistakes, defaulting yolo to off
+outsidepair|direct-PR off|warn|keeping direct-PR, defaulting yolo to off
+emptyann|no-mistakes off|warn|defaulting to no-mistakes off
+loyolo|local-only off|warn|keeping local-only, defaulting yolo to off
+lodup|local-only off|warn|keeping local-only, defaulting yolo to off
+looutside|local-only off|warn|keeping local-only, defaulting yolo to off
+unknownmode|no-mistakes off|warn|defaulting to no-mistakes off
+yolotwice|no-mistakes off|warn|keeping no-mistakes, defaulting yolo to off
+yolothenmode|no-mistakes off|warn|defaulting to no-mistakes off
+trailspace|no-mistakes off|warn|defaulting to no-mistakes off
+crlfline|no-mistakes off|warn|defaulting to no-mistakes off
 ROWS
 
   err=$(FM_HOME="$home" "$PROJECT_MODE" neverregistered 2>&1 >/dev/null)

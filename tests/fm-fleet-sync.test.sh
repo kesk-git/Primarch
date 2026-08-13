@@ -396,6 +396,32 @@ test_malformed_registry_line_is_reported_not_swallowed() {
   pass "a malformed registry line is reported as registry-invalid, and sync still proceeds"
 }
 
+# The relayed warning and the sync's own next line have to agree. A recognized
+# mode survives a fault elsewhere in the annotation, so a local-only project with
+# a +-less yolo flag is still skipped as local-only - the alarm must say it kept
+# that posture, not claim the standing default, or an operator reads a walled-off
+# project as having just become push-eligible.
+test_malformed_local_only_line_reports_the_posture_it_kept() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_pair "$home" regkept)
+  advance_origin "$home" regkept C1
+  mkdir -p "$home/data"
+  printf -- '- regkept [local-only yolo] - test project (added 2026-06-27)\n' > "$home/data/projects.md"
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "regkept: registry-invalid:" \
+    "a malformed local-only line must still be reported"
+  assert_contains "$out" "keeping local-only" \
+    "the report must name the posture the line actually kept"
+  assert_not_contains "$out" "defaulting to no-mistakes off" \
+    "the report must not claim the standing default for a mode that survived"
+  assert_contains "$out" "regkept: skipped: local-only project" \
+    "the kept posture must still govern the sync"
+  pass "a malformed line on a local-only project reports the posture it kept, consistent with the skip that follows"
+}
+
 test_healthy_registry_line_stays_quiet() {
   local home clone out
   home=$(new_home)
@@ -707,6 +733,7 @@ test_already_current_unchanged
 test_no_origin_skipped
 test_local_only_skipped
 test_malformed_registry_line_is_reported_not_swallowed
+test_malformed_local_only_line_reports_the_posture_it_kept
 test_healthy_registry_line_stays_quiet
 test_absent_registry_stays_quiet
 test_unregistered_clone_stays_quiet

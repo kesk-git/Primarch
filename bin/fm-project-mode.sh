@@ -88,10 +88,13 @@
 # --raw prints the registered annotation unmapped, so a caller that must tell a
 # conditional policy apart from a flat mode sees "no-mistakes-prod-only" itself.
 #
-# A malformed entry line - any of the fault cases enumerated above - falls back to
-# "no-mistakes off" and warns to stderr as
+# A malformed entry line - any of the fault cases enumerated above - resolves to
+# the posture that table gives it and warns to stderr as
 # "warn: registry-invalid: <reason> for <name>; ...", so a typo never silently
-# drops the gate. That "registry-invalid:" marker is the caller contract: a
+# drops the gate. The warning names the posture it actually resolved to: a fault
+# that left a recognized mode standing says so ("keeping <mode>, defaulting yolo
+# to off"), and only an unreadable or absent mode says "defaulting to
+# no-mistakes off". That "registry-invalid:" marker is the caller contract: a
 # warning carrying it means the line is malformed and must be reported, and the
 # two warnings without it ("no registry at <path>", "project X not in registry")
 # mark documented-normal states every caller must stay quiet about. A new caller
@@ -147,7 +150,9 @@ registry_rows() {  # <lint 0|1> [<name>]
       lead = region;
       sub(/[[:space:]].*$/, "", lead);
       gsub(/^\[|\]$/, "", lead);
-      return is_mode(lead) ? lead : "no-mistakes";
+      if (is_mode(lead)) { A_KEPT = 1; return lead }
+      A_KEPT = 0;
+      return "no-mistakes";
     }
     # THE annotation grammar, and the only place it is defined. One tokenization
     # decides both the verdict (A_FAULT, empty when well formed) and the posture
@@ -155,7 +160,7 @@ registry_rows() {  # <lint 0|1> [<name>]
     # disagree about the same annotation. Every case in the header table is a
     # branch here; a faulted annotation keeps only the part that parsed.
     function annotate(region,   inner, k, a, j, seen_yolo) {
-      A_MODE = "no-mistakes"; A_YOLO = "off"; A_FAULT = "";
+      A_MODE = "no-mistakes"; A_YOLO = "off"; A_FAULT = ""; A_KEPT = 0;
       if (region == "") return;                                # legacy, no annotation
       if (region !~ /^\[/ || region !~ /\]$/) {
         A_FAULT = "malformed annotation \"" region "\"";       # unterminated, or a token outside the brackets
@@ -198,7 +203,7 @@ registry_rows() {  # <lint 0|1> [<name>]
         for (i=3; i<=NF; i++) { region = region (region==""?"":" ") $i; if ($i ~ /\]$/) break }
       }
       annotate(region);
-      printf "%s\037%s\037%s\037%s\037%s\037%s\n", $2, A_MODE, A_YOLO, entry, A_FAULT, $0;
+      printf "%s\037%s\037%s\037%s\037%s\037%s\037%s\n", $2, A_MODE, A_YOLO, entry, A_FAULT, A_KEPT, $0;
       if (lint!=1) exit;
     }
   ' "$REG"
@@ -206,7 +211,7 @@ registry_rows() {  # <lint 0|1> [<name>]
 
 if [ "$LINT" -eq 1 ]; then
   [ -f "$REG" ] || exit 0
-  while IFS=$'\037' read -r lname _ _ lentry lfault lraw; do
+  while IFS=$'\037' read -r lname _ _ lentry lfault _ lraw; do
     [ -n "$lname" ] || continue
     [ "$lentry" = 1 ] || continue
     [ -n "$lfault" ] || continue
@@ -231,11 +236,17 @@ if [ -z "$row" ]; then
   exit 0
 fi
 
-IFS=$'\037' read -r _ mode yolo entry fault _ <<EOF
+IFS=$'\037' read -r _ mode yolo entry fault kept _ <<EOF
 $row
 EOF
 case "$entry$fault" in
-  1?*) echo "warn: registry-invalid: $fault for $NAME; defaulting to no-mistakes off" >&2 ;;
+  1?*)
+    if [ "$kept" = 1 ]; then
+      echo "warn: registry-invalid: $fault for $NAME; keeping $mode, defaulting yolo to off" >&2
+    else
+      echo "warn: registry-invalid: $fault for $NAME; defaulting to no-mistakes off" >&2
+    fi
+    ;;
 esac
 case "$yolo" in on|off) ;; *) yolo=off ;; esac
 # A conditional policy is not a task mode. Mechanical callers get its most
