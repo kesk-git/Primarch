@@ -241,6 +241,10 @@ test_project_mode_warns_on_every_malformed_annotation() {
 - plainproj [no-mistakes] - fixture (added 2026-01-01)
 - flatproj [direct-PR] - fixture (added 2026-01-01)
 - localproj [local-only] - fixture (added 2026-01-01)
+- loyolo [local-only yolo] - fixture (added 2026-01-01)
+- lodup [local-only +yolo +yolo] - fixture (added 2026-01-01)
+- looutside [local-only] yolo on - fixture (added 2026-01-01)
+- unknownmode [nope] - fixture (added 2026-01-01)
 - legacyproj - fixture (added 2026-01-01)
 - commaform [no-mistakes, yolo on] - fixture (added 2026-01-01)
 - extra [no-mistakes yolo on] - fixture (added 2026-01-01)
@@ -282,8 +286,12 @@ noplus|no-mistakes off|warn
 typoflag|no-mistakes off|warn
 badmode|no-mistakes off|warn
 outsideyolo|no-mistakes off|warn
-outsidepair|no-mistakes off|warn
+outsidepair|direct-PR off|warn
 emptyann|no-mistakes off|warn
+loyolo|local-only off|warn
+lodup|local-only off|warn
+looutside|local-only off|warn
+unknownmode|no-mistakes off|warn
 yolotwice|no-mistakes off|warn
 yolothenmode|no-mistakes off|warn
 trailspace|no-mistakes off|warn

@@ -35,19 +35,29 @@
 # separator must be accounted for by the grammar below. registry_rows' annotate()
 # is the single owner of that grammar: one tokenization yields both the verdict
 # and the posture the line resolves to, so the alarm and the resolution cannot
-# drift apart. Every case, enumerated - a faulted annotation resolves to the
-# standing default (no-mistakes off), which is why a typo never keeps a posture:
+# drift apart. A faulted annotation keeps only the part that parsed: a mode token
+# the grammar recognizes still resolves, and the faulted part falls back to its
+# own default (yolo off). Every case, enumerated:
 #   absent                          -> valid            -> no-mistakes off
 #   [<known mode>]                  -> valid            -> <mode> off
 #   [<known mode> +yolo]            -> valid            -> <mode> on
 #   [+yolo]                         -> valid            -> no-mistakes on
-#   [<unknown mode> ...]            -> unknown mode
-#   [<known mode> <other token>]    -> unrecognized annotation token
-#   [+yolo <any other token>]       -> unrecognized annotation token
-#   [... +yolo +yolo]               -> duplicate annotation token
-#   []                              -> empty annotation
+#   [<unknown mode> ...]            -> unknown mode     -> no-mistakes off
+#   [<known mode> <other token>]    -> unrecognized annotation token -> <mode> off
+#   [+yolo <any other token>]       -> unrecognized annotation token -> no-mistakes off
+#   [... +yolo +yolo]               -> duplicate annotation token    -> <mode> off
+#   []                              -> empty annotation -> no-mistakes off
 #   no "[" or no closing "]", or a
-#   token outside the brackets      -> malformed annotation
+#   token outside the brackets      -> malformed annotation -> <mode> off
+#
+# The fallback is fail-safe on the rigor axis and would be fail-DANGEROUS on the
+# exposure axis, which is why the two are treated differently. An unreadable mode
+# falls back to no-mistakes, the most rigorous leg, so a typo can never buy less
+# review than the captain registered. But local-only is about exposure, not
+# rigor: bin/fm-home-seed.sh and bin/fm-remote-home-seed.sh refuse to seed or
+# provision a local-only project, so silently promoting a recognized local-only
+# to the standing default on an unrelated typo would push a project the captain
+# walled off. A recognized mode therefore survives a fault elsewhere in the line.
 #
 # Anything else under "- " is prose, not an entry: a bullet without the separator,
 # the description, or the line-final "(added <date>)" is not a registry entry, so
@@ -114,12 +124,14 @@ KNOWN_MODES='no-mistakes direct-PR local-only no-mistakes-prod-only'
 # row per registry line: the first line matching <name> for a lookup, every
 # "- <name>" line under --lint.
 #
-# Resolution (mode, yolo) is unchanged and stays deliberately forgiving. The two
 # <entry> says the line matches the entry grammar in the header, <fault> is the
 # one reason it violates that grammar, and <mode>/<yolo> are what it resolves to -
-# all four from annotate()'s single tokenization. The region between the name and
-# the " - " separator is the entire annotation, so a token before, inside, or
-# after the brackets is examined by the same rule rather than per position.
+# all four derived from annotate()'s single tokenization, so the verdict and the
+# posture cannot disagree. A fault does not discard what parsed: a recognized mode
+# stands and only the faulted part falls back to its default (see the header's
+# rigor-vs-exposure note). The region between the name and the " - " separator is
+# the entire annotation, so a token before, inside, or after the brackets is
+# examined by the same rule rather than per position.
 registry_rows() {  # <lint 0|1> [<name>]
   awk -v lint="$1" -v n="${2:-}" -v modes="$KNOWN_MODES" '
     function is_mode(m,   i, k, a) {
@@ -127,11 +139,21 @@ registry_rows() {  # <lint 0|1> [<name>]
       for (i = 1; i <= k; i++) if (a[i] == m) return 1;
       return 0;
     }
+    # A fault elsewhere in the annotation never discards a mode that parsed: the
+    # leading annotation token still names the registered mode whenever it is
+    # one, so a typo in the yolo flag cannot quietly promote a local-only project
+    # to the standing default. An unreadable or absent mode still falls back.
+    function leading_mode(region,   lead) {
+      lead = region;
+      sub(/[[:space:]].*$/, "", lead);
+      gsub(/^\[|\]$/, "", lead);
+      return is_mode(lead) ? lead : "no-mistakes";
+    }
     # THE annotation grammar, and the only place it is defined. One tokenization
     # decides both the verdict (A_FAULT, empty when well formed) and the posture
     # it resolves to (A_MODE, A_YOLO), so the alarm and the resolution can never
     # disagree about the same annotation. Every case in the header table is a
-    # branch here; a faulted annotation resolves to the standing default.
+    # branch here; a faulted annotation keeps only the part that parsed.
     function annotate(region,   inner, k, a, j, seen_yolo) {
       A_MODE = "no-mistakes"; A_YOLO = "off"; A_FAULT = "";
       if (region == "") return;                                # legacy, no annotation
@@ -158,7 +180,7 @@ registry_rows() {  # <lint 0|1> [<name>]
           else { seen_yolo = 1; A_YOLO = "on" }
         }
       }
-      if (A_FAULT != "") { A_MODE = "no-mistakes"; A_YOLO = "off" }
+      if (A_FAULT != "") { A_MODE = leading_mode(region); A_YOLO = "off" }
     }
     # Trailing whitespace and a CRLF ending are markdown noise, not grammar, so
     # they are trimmed once here - before recognition, field splitting, and the
