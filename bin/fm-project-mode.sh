@@ -20,7 +20,7 @@
 #   -----------  ----------------------------------------  ---------
 #   "- " prefix  literal, column 0 (no leading indent)      yes
 #   <name>       one whitespace-free token                  presence only
-#   <annotation> absent, or "[" <mode> [ " +yolo" ] "]"     yes, end to end
+#   <annotation> absent, or "[" [<mode>] [ " +yolo" ] "]"   yes, end to end
 #   " - "        literal separator token                    yes
 #   <desc>       free text, at least one token              presence only
 #   <date>       "(added " <date> ")", line-final           presence only
@@ -28,17 +28,23 @@
 #   - <name> - <desc> (added <date>)                  -> no-mistakes off  (legacy default)
 #   - <name> [<mode>] - <desc> (added <date>)          -> <mode> off
 #   - <name> [<mode> +yolo] - <desc> (added <date>)    -> <mode> on
+#   - <name> [+yolo] - <desc> (added <date>)           -> no-mistakes on   (mode omitted)
 #
 # A "- " line carrying all of name/separator/desc/added-date is an ENTRY and its
 # annotation is validated as a whole - every token between the name and the
-# separator must be accounted for by the grammar above. The annotation cases,
-# enumerated (registry_rows' entry_fault owns them):
-#   absent                          -> valid, legacy default
-#   [<known mode>]                  -> valid
-#   [<known mode> +yolo]            -> valid
+# separator must be accounted for by the grammar below. registry_rows' annotate()
+# is the single owner of that grammar: one tokenization yields both the verdict
+# and the posture the line resolves to, so the alarm and the resolution cannot
+# drift apart. Every case, enumerated - a faulted annotation resolves to the
+# standing default (no-mistakes off), which is why a typo never keeps a posture:
+#   absent                          -> valid            -> no-mistakes off
+#   [<known mode>]                  -> valid            -> <mode> off
+#   [<known mode> +yolo]            -> valid            -> <mode> on
+#   [+yolo]                         -> valid            -> no-mistakes on
 #   [<unknown mode> ...]            -> unknown mode
 #   [<known mode> <other token>]    -> unrecognized annotation token
-#   [<known mode> +yolo +yolo]      -> duplicate annotation token
+#   [+yolo <any other token>]       -> unrecognized annotation token
+#   [... +yolo +yolo]               -> duplicate annotation token
 #   []                              -> empty annotation
 #   no "[" or no closing "]", or a
 #   token outside the brackets      -> malformed annotation
@@ -109,11 +115,11 @@ KNOWN_MODES='no-mistakes direct-PR local-only no-mistakes-prod-only'
 # "- <name>" line under --lint.
 #
 # Resolution (mode, yolo) is unchanged and stays deliberately forgiving. The two
-# new fields are the whole-line verdict: <entry> says the line matches the entry
-# grammar in the header, and <fault> is the one reason it violates that grammar.
-# entry_fault() consumes the line end to end - the region between the name and the
-# " - " separator is the entire annotation, so a token before, inside, or after
-# the brackets is examined by the same rule rather than by a scan per position.
+# <entry> says the line matches the entry grammar in the header, <fault> is the
+# one reason it violates that grammar, and <mode>/<yolo> are what it resolves to -
+# all four from annotate()'s single tokenization. The region between the name and
+# the " - " separator is the entire annotation, so a token before, inside, or
+# after the brackets is examined by the same rule rather than per position.
 registry_rows() {  # <lint 0|1> [<name>]
   awk -v lint="$1" -v n="${2:-}" -v modes="$KNOWN_MODES" '
     function is_mode(m,   i, k, a) {
@@ -121,45 +127,56 @@ registry_rows() {  # <lint 0|1> [<name>]
       for (i = 1; i <= k; i++) if (a[i] == m) return 1;
       return 0;
     }
-    # The full grammar, one branch per case. Returns "" for a well-formed entry.
-    function entry_fault(region,   inner, k, a, j) {
-      if (region == "") return "";                             # legacy, no annotation
-      if (region !~ /^\[/ || region !~ /\]$/)
-        return "malformed annotation \"" region "\"";          # unterminated, or a token outside the brackets
-      inner = substr(region, 2, length(region) - 2);
-      k = split(inner, a, " ");
-      if (k == 0) return "empty annotation \"" region "\"";
-      if (!is_mode(a[1])) return "unknown mode \"" a[1] "\"";
-      for (j = 2; j <= k; j++)
-        if (a[j] != "+yolo") return "unrecognized annotation token \"" a[j] "\"";
-      if (k > 2) return "duplicate annotation token \"+yolo\"";
-      return "";
+    # THE annotation grammar, and the only place it is defined. One tokenization
+    # decides both the verdict (A_FAULT, empty when well formed) and the posture
+    # it resolves to (A_MODE, A_YOLO), so the alarm and the resolution can never
+    # disagree about the same annotation. Every case in the header table is a
+    # branch here; a faulted annotation resolves to the standing default.
+    function annotate(region,   inner, k, a, j, seen_yolo) {
+      A_MODE = "no-mistakes"; A_YOLO = "off"; A_FAULT = "";
+      if (region == "") return;                                # legacy, no annotation
+      if (region !~ /^\[/ || region !~ /\]$/) {
+        A_FAULT = "malformed annotation \"" region "\"";       # unterminated, or a token outside the brackets
+      } else {
+        inner = substr(region, 2, length(region) - 2);
+        k = split(inner, a, " ");
+        j = 1;
+        if (k == 0) {
+          A_FAULT = "empty annotation \"" region "\"";
+        } else if (a[1] == "+yolo") {
+          A_MODE = "no-mistakes";                              # mode omitted: the standing default, yolo on
+        } else if (!is_mode(a[1])) {
+          A_FAULT = "unknown mode \"" a[1] "\"";
+        } else {
+          A_MODE = a[1];
+          j = 2;
+        }
+        seen_yolo = 0;
+        for (; A_FAULT == "" && j <= k; j++) {
+          if (a[j] != "+yolo") A_FAULT = "unrecognized annotation token \"" a[j] "\"";
+          else if (seen_yolo) A_FAULT = "duplicate annotation token \"+yolo\"";
+          else { seen_yolo = 1; A_YOLO = "on" }
+        }
+      }
+      if (A_FAULT != "") { A_MODE = "no-mistakes"; A_YOLO = "off" }
     }
     # Trailing whitespace and a CRLF ending are markdown noise, not grammar, so
     # they are trimmed once here - before recognition, field splitting, and the
     # raw line a diagnostic quotes - rather than tolerated per anchor.
     { sub(/\r$/, ""); sub(/[[:space:]]+$/, "") }
     $1=="-" && NF>=2 && (lint==1 || $2==n) {
-      mode="no-mistakes"; yolo="off";
-      if ($3 ~ /^\[/) {
-        s="";
-        for (i=3; i<=NF; i++) { s = s (s==""?"":" ") $i; if ($i ~ /\]$/) break }
-        gsub(/^\[|\]$/, "", s);           # strip the surrounding brackets
-        k = split(s, a, " ");
-        if (a[1] != "" && a[1] != "+yolo") mode = a[1];
-        for (j=1; j<=k; j++) if (a[j]=="+yolo") yolo="on";
-      }
-      entry=0; fault=""; sep=0;
+      entry=0; sep=0; region="";
       for (i=3; i<=NF; i++) if ($i == "-") { sep=i; break }
-      if ($0 ~ /^- / && sep >= 3 && NF > sep && $0 ~ /\(added [^)]+\)$/) {
-        entry=1;
-        region="";
+      if ($0 ~ /^- / && sep >= 3 && NF > sep && $0 ~ /\(added [^)]+\)$/) entry=1;
+      if (entry) {
         for (i=3; i<sep; i++) region = region (region==""?"":" ") $i;
-        fault=entry_fault(region);
-      } else if (!is_mode(mode)) {
-        fault="unknown mode \"" mode "\"";                     # not an entry: fall back, but never report
+      } else if ($3 ~ /^\[/) {
+        # Not an entry, so its verdict is never reported, but a lookup still has
+        # to resolve it: the bracket span is the closest thing to an annotation.
+        for (i=3; i<=NF; i++) { region = region (region==""?"":" ") $i; if ($i ~ /\]$/) break }
       }
-      printf "%s\037%s\037%s\037%s\037%s\037%s\n", $2, mode, yolo, entry, fault, $0;
+      annotate(region);
+      printf "%s\037%s\037%s\037%s\037%s\037%s\n", $2, A_MODE, A_YOLO, entry, A_FAULT, $0;
       if (lint!=1) exit;
     }
   ' "$REG"
@@ -195,13 +212,9 @@ fi
 IFS=$'\037' read -r _ mode yolo entry fault _ <<EOF
 $row
 EOF
-if [ -n "$fault" ]; then
-  case "$entry" in
-    1) echo "warn: registry-invalid: $fault for $NAME; defaulting to no-mistakes off" >&2 ;;
-  esac
-  mode=no-mistakes
-  yolo=off
-fi
+case "$entry$fault" in
+  1?*) echo "warn: registry-invalid: $fault for $NAME; defaulting to no-mistakes off" >&2 ;;
+esac
 case "$yolo" in on|off) ;; *) yolo=off ;; esac
 # A conditional policy is not a task mode. Mechanical callers get its most
 # rigorous leg; --raw callers get the annotation itself (see the header).

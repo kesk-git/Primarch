@@ -1199,6 +1199,8 @@ a malformed entry with trailing whitespace is still flagged^- trailspace [no-mis
 a malformed entry with a CRLF ending is still flagged^- crlfline [no-mistakes, +yolo] - fixture (added 2026-01-01)\r^grep^PROJECT_REGISTRY: crlfline: unknown mode "no-mistakes,"
 a healthy line with trailing whitespace stays silent^- clean [no-mistakes +yolo] - fixture (added 2026-01-01)\040^empty^
 a legacy line with no annotation stays silent^- legacy - fixture (added 2026-01-01)^empty^
+a mode-less [+yolo] annotation stays silent^- yoloonly [+yolo] - mode omitted, yolo on (added 2026-01-01)^empty^
+a repeated yolo flag after a mode-less +yolo is flagged^- yolotwice [+yolo +yolo] - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: yolotwice: duplicate annotation token
 a prose bullet is not an entry and stays silent^- see [docs](https://x) for the fleet notes^empty^
 a bullet without the added-date is not an entry and stays silent^- draft [no-mistakes, +yolo] - not registered yet^empty^
 an indented sub-bullet is not an entry and stays silent^  - child [nope] - sub-bullet (added 2026-01-01)^empty^
