@@ -102,10 +102,13 @@
 #
 # --lint validates every entry line in the registry instead of resolving one
 # project, in a single process, and prints one tab-separated
-# "<name>\t<reason>\t<raw line>" row per malformed entry (nothing at all for a
-# healthy or absent registry, and nothing for a non-entry bullet). Unlike a
-# per-name lookup, which stops at the first line carrying that name, it reaches a
-# malformed duplicate entry for an already-registered name.
+# "<name>\t<reason>; <posture>\t<raw line>" row per malformed entry (nothing at
+# all for a healthy or absent registry, and nothing for a non-entry bullet). The
+# <posture> half is the same clause the per-project warning carries, from the same
+# owner, so a caller that only ever sees a lint row still learns which posture the
+# line resolved to. Unlike a per-name lookup, which stops at the first line
+# carrying that name, it reaches a malformed duplicate entry for an already-
+# registered name.
 # Usage: fm-project-mode.sh [--raw|--lint] <project-name>
 set -eu
 
@@ -209,13 +212,23 @@ registry_rows() {  # <lint 0|1> [<name>]
   ' "$REG"
 }
 
+# The one owner of "what did this line actually resolve to", so the per-project
+# warning and --lint's rows cannot describe the same fault differently.
+posture_clause() {  # <kept 0|1> <mode>
+  if [ "$1" = 1 ]; then
+    printf 'keeping %s, defaulting yolo to off' "$2"
+  else
+    printf 'defaulting to no-mistakes off'
+  fi
+}
+
 if [ "$LINT" -eq 1 ]; then
   [ -f "$REG" ] || exit 0
-  while IFS=$'\037' read -r lname _ _ lentry lfault _ lraw; do
+  while IFS=$'\037' read -r lname lmode _ lentry lfault lkept lraw; do
     [ -n "$lname" ] || continue
     [ "$lentry" = 1 ] || continue
     [ -n "$lfault" ] || continue
-    printf '%s\t%s\t%s\n' "$lname" "$lfault" "$lraw"
+    printf '%s\t%s; %s\t%s\n' "$lname" "$lfault" "$(posture_clause "$lkept" "$lmode")" "$lraw"
   done < <(registry_rows 1)
   exit 0
 fi
@@ -240,13 +253,7 @@ IFS=$'\037' read -r _ mode yolo entry fault kept _ <<EOF
 $row
 EOF
 case "$entry$fault" in
-  1?*)
-    if [ "$kept" = 1 ]; then
-      echo "warn: registry-invalid: $fault for $NAME; keeping $mode, defaulting yolo to off" >&2
-    else
-      echo "warn: registry-invalid: $fault for $NAME; defaulting to no-mistakes off" >&2
-    fi
-    ;;
+  1?*) echo "warn: registry-invalid: $fault for $NAME; $(posture_clause "$kept" "$mode")" >&2 ;;
 esac
 case "$yolo" in on|off) ;; *) yolo=off ;; esac
 # A conditional policy is not a task mode. Mechanical callers get its most

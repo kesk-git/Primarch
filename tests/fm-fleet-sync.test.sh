@@ -422,6 +422,27 @@ test_malformed_local_only_line_reports_the_posture_it_kept() {
   pass "a malformed line on a local-only project reports the posture it kept, consistent with the skip that follows"
 }
 
+# The warning is captured in-band rather than through a temp file, so a home with
+# no writable TMPDIR still gets the alarm. A capture that needs scratch space has
+# a failure mode that silently discards the warning - the exact swallowing this
+# report exists to end - and that mode must not exist.
+test_malformed_registry_line_is_reported_without_a_writable_tmpdir() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_pair "$home" regnotmp)
+  advance_origin "$home" regnotmp C1
+  mkdir -p "$home/data"
+  printf -- '- regnotmp [no-mistakes, +yolo] - test project (added 2026-06-27)\n' > "$home/data/projects.md"
+
+  out=$(TMPDIR="$home/no-such-dir" run_sync "$home" "$clone")
+
+  assert_contains "$out" "regnotmp: registry-invalid:" \
+    "a malformed registry line must still be reported when no temp file can be created"
+  assert_contains "$out" 'unknown mode "no-mistakes,"' \
+    "the reported warning must carry the parser's reason, not an empty capture"
+  pass "a malformed registry line is reported even when TMPDIR is unwritable"
+}
+
 test_healthy_registry_line_stays_quiet() {
   local home clone out
   home=$(new_home)
@@ -734,6 +755,7 @@ test_no_origin_skipped
 test_local_only_skipped
 test_malformed_registry_line_is_reported_not_swallowed
 test_malformed_local_only_line_reports_the_posture_it_kept
+test_malformed_registry_line_is_reported_without_a_writable_tmpdir
 test_healthy_registry_line_stays_quiet
 test_absent_registry_stays_quiet
 test_unregistered_clone_stays_quiet

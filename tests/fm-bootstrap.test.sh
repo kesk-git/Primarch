@@ -1200,6 +1200,8 @@ a malformed entry with a CRLF ending is still flagged^- crlfline [no-mistakes, +
 a healthy line with trailing whitespace stays silent^- clean [no-mistakes +yolo] - fixture (added 2026-01-01)\040^empty^
 a legacy line with no annotation stays silent^- legacy - fixture (added 2026-01-01)^empty^
 a mode-less [+yolo] annotation stays silent^- yoloonly [+yolo] - mode omitted, yolo on (added 2026-01-01)^empty^
+a preserved mode is named in the session-start line^- lo1 [local-only yolo] - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: lo1: unrecognized annotation token "yolo"; keeping local-only, defaulting yolo to off
+a fallback to the standing default is named too^- nope1 [nope] - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: nope1: unknown mode "nope"; defaulting to no-mistakes off
 a repeated yolo flag after a mode-less +yolo is flagged^- yolotwice [+yolo +yolo] - fixture (added 2026-01-01)^grep^PROJECT_REGISTRY: yolotwice: duplicate annotation token
 a prose bullet is not an entry and stays silent^- see [docs](https://x) for the fleet notes^empty^
 a bullet without the added-date is not an entry and stays silent^- draft [no-mistakes, +yolo] - not registered yet^empty^
@@ -1236,6 +1238,28 @@ test_project_registry_lint_without_the_helper() {
   pass "bootstrap's registry lint stays silent - on stdout and stderr both - when its bin/fm-project-mode.sh helper is absent"
 }
 
+# A helper too old to know --lint takes it as a project name and prints a
+# one-field posture ("no-mistakes off") on stdout. That is not a lint row, and
+# formatting it produces a nonsense session-start diagnostic naming a posture as
+# if it were a project, so only a row carrying the full documented shape is used.
+test_project_registry_lint_with_a_helper_too_old_for_lint() {
+  local case_dir fakebin out
+  case_dir="$TMP_ROOT/registry-old-helper"
+  mkdir -p "$case_dir/home/config" "$case_dir/home/data" "$case_dir/root/bin"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' '- proj [no-mistakes, +yolo] - fixture (added 2026-01-01)' > "$case_dir/home/data/projects.md"
+  git -C "$ROOT" show a29f0fad1ba70149d10a12ecd264fe73d23ae766:bin/fm-project-mode.sh \
+    > "$case_dir/root/bin/fm-project-mode.sh"
+  chmod +x "$case_dir/root/bin/fm-project-mode.sh"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/root" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  case "$out" in
+    *PROJECT_REGISTRY*) fail "a helper too old for --lint must not produce a diagnostic, got: $out" ;;
+  esac
+  pass "bootstrap's registry lint ignores output from a helper too old to support --lint"
+}
+
 test_bootstrap_reporting
 test_no_mistakes_min_version
 test_gh_axi_min_version
@@ -1266,3 +1290,4 @@ test_crew_dispatch_active_rules_are_verbose_bootstrap_info
 test_crew_dispatch_validation
 test_project_registry_lint
 test_project_registry_lint_without_the_helper
+test_project_registry_lint_with_a_helper_too_old_for_lint

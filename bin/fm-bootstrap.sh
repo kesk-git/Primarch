@@ -1092,13 +1092,17 @@ crew_dispatch_validate() {
 # an already-registered name, and this never re-parses the format itself. A
 # healthy, absent, or unvalidatable registry stays silent - the helper's own
 # stderr is left unredirected so a broken owner is visible rather than mistaken
-# for a clean registry.
+# for a clean registry. Only a row carrying all three fields of the documented
+# --lint shape is formatted: a helper too old to know --lint takes it as a project
+# name and prints a one-field posture instead, which must not become a diagnostic.
 project_registry_lint() {
   local name fault raw
   [ -x "$FM_ROOT/bin/fm-project-mode.sh" ] || return 0
   [ -f "$DATA/projects.md" ] || return 0
   while IFS=$'\t' read -r name fault raw; do
     [ -n "$name" ] || continue
+    [ -n "$fault" ] || continue
+    [ -n "$raw" ] || continue
     echo "PROJECT_REGISTRY: $name: $fault - line: \"$raw\" - expected: - $name [<mode> +yolo] - <desc> (added <date>)"
   done < <(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$FM_ROOT/bin/fm-project-mode.sh" --lint)
 }

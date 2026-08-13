@@ -311,15 +311,22 @@ sync_project() {
     echo "$label: skipped: not a git repo"
     return 0
   fi
-  # One parser run per project, not one per stream: stderr lands in a temp file so
-  # the posture and its warning come from the same read of data/projects.md.
-  mode_err=$(mktemp "${TMPDIR:-/tmp}/fm-fleet-sync-mode.XXXXXX" 2>/dev/null) || mode_err=/dev/null
-  mode_line=$("$FM_ROOT/bin/fm-project-mode.sh" "$label" 2>"$mode_err") || mode_line="no-mistakes off"
+  # One parser run per project, not one per stream, so the posture and its warning
+  # come from the same read of data/projects.md. Both streams are captured
+  # together and split on fm-project-mode.sh's own "warn: " prefix: nothing here
+  # needs a writable temp dir, so there is no degraded path where the warning this
+  # report exists to surface goes back to being discarded.
+  mode_out=$("$FM_ROOT/bin/fm-project-mode.sh" "$label" 2>&1) || true
+  mode_line="no-mistakes off"
   mode_warn=""
-  if [ "$mode_err" != /dev/null ]; then
-    mode_warn=$(<"$mode_err")
-    rm -f "$mode_err"
-  fi
+  while IFS= read -r mode_row; do
+    case "$mode_row" in
+      'warn: '*) mode_warn=${mode_warn:+$mode_warn$'\n'}$mode_row ;;
+      ?*) mode_line=$mode_row ;;
+    esac
+  done <<EOF
+$mode_out
+EOF
   case "$mode_warn" in
     *'registry-invalid:'*)
       mode_warn=$(first_line "$mode_warn")
