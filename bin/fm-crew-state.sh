@@ -65,9 +65,12 @@
 #   5. Missing meta or torn-down worktree: report unknown · none. If no run is
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
 #      than trusting a stale status log. If the run source itself never answered,
-#      report unreadable · run-source and do NOT fall through to the status log:
-#      spending a stale event line as current state is worst exactly when the
-#      authoritative source is down.
+#      report unreadable · run-source instead, and suppress every NEGATIVE
+#      fallback verdict (missing target, dead endpoint, unavailable harness
+#      state, status log) so none of them can pre-empt it into a measured-looking
+#      unknown · none: until the run question is answered nothing here can
+#      establish that the crew stopped. Only a positive direct measurement - an
+#      exact busy verdict - still answers, because that one IS a measurement.
 #
 # Read-only and side-effect free. Always exits 0 on a successful read regardless
 # of state; exit 2 only on a usage error (no id).
@@ -630,16 +633,32 @@ if [ "$HAVE_RUN" = 1 ]; then
 fi
 
 # --- fallback: no run attributed to this crew ------------------------------
+# Everything below is reached in two very different situations, and only one of
+# them may spend an ABSENCE of evidence as a verdict about the crew:
+#   - RUN_READ=answered/skipped: it is MEASURED that no run owns this crew, so a
+#     dead endpoint or a missing target does mean the crew is gone.
+#   - RUN_READ=unreadable: nobody found out whether a run owns this crew. This
+#     script deliberately treats an attributed run as authoritative even when the
+#     pane has closed (the run-step path above never consults the pane), so a
+#     dead endpoint cannot establish a stop while that question is unanswered.
+# Only a POSITIVE, direct measurement of the crew - an exact busy verdict - may
+# still answer in the second case. Every negative one is suppressed so it cannot
+# pre-empt the `unreadable` emit below into `unknown - source: none - backend
+# target gone`, which is byte-identical to a measured stop and is exactly the
+# input stuck-crewmate-recovery would turn into a relaunch.
+#
 # The run-step path above already handled any crew with a run, regardless of pane
 # liveness, so a finished-but-pane-closed crew never reaches here. Down here there
 # is no run to consult, so a dead/unreadable target means the crew is gone: report
 # unknown rather than trusting a possibly-stale status log as the current state.
-[ -n "$BACKEND_TARGET" ] || emit unknown none "no backend target recorded"
-# A worker placed on another host has no locally observable endpoint, so the
-# liveness gate below would report every healthy one gone. Its state comes from
-# the status log the remote worker keeps writing here.
-if ! fm_backend_is_remote_placement "$META"; then
-  pane_readable "$BACKEND_TARGET" || emit unknown none "backend target gone: $BACKEND_TARGET"
+if [ "$RUN_READ" != unreadable ]; then
+  [ -n "$BACKEND_TARGET" ] || emit unknown none "no backend target recorded"
+  # A worker placed on another host has no locally observable endpoint, so the
+  # liveness gate below would report every healthy one gone. Its state comes from
+  # the status log the remote worker keeps writing here.
+  if ! fm_backend_is_remote_placement "$META"; then
+    pane_readable "$BACKEND_TARGET" || emit unknown none "backend target gone: $BACKEND_TARGET"
+  fi
 fi
 
 # Secondmates idle on their own watcher (idle pane = healthy), so the busy
@@ -652,18 +671,20 @@ if [ "$KIND" != secondmate ]; then
   case "${BUSY_VERDICT%% *}" in
     busy) emit working pane "harness busy (${BUSY_VERDICT#* })" ;;
     idle) ;;
-    *) emit unknown pane "harness state unavailable ($BUSY_VERDICT)" ;;
+    # An unavailable harness state is not a measurement either. With the run
+    # source also unread there is nothing measured at all, so say so once, below,
+    # instead of reporting a second absence as this crew's current state.
+    *) [ "$RUN_READ" = unreadable ] || emit unknown pane "harness state unavailable ($BUSY_VERDICT)" ;;
   esac
 fi
 
-# The run source did not answer, and nothing above measured the crew directly.
-# Say that, rather than falling through to the status log: the log is an
-# append-only EVENT log, so spending its last line here would report a stale
-# event as a current measurement precisely when the authoritative source is
-# down. `unreadable` is deliberately its own state, not another `unknown`,
-# because a supervisor must be able to tell "this crew has no live run" from "I
-# could not find out" - the two justify opposite actions, and rendering them
-# identically is what makes an alarm unspendable.
+# The run source did not answer, and nothing above measured this crew directly.
+# `unreadable` is deliberately its own state, not another `unknown`, because a
+# supervisor must be able to tell "this crew has no live run" from "I could not
+# find out" - the two justify opposite actions, and rendering them identically is
+# what makes an alarm unspendable. Emitted before the status-log fallback for the
+# same reason: the log is an append-only EVENT log, so promoting its last line to
+# current state is worst exactly when the authoritative source is down.
 if [ "$RUN_READ" = unreadable ]; then
   emit unreadable run-source "validation state could not be read (no-mistakes did not answer within ${NM_TIMEOUT}s)"
 fi

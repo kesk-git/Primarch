@@ -6,7 +6,7 @@ Keep the bar high: knowledge useful to almost every future session, and a pointe
 
 ## Destination
 
-docs/architecture.md
+docs/architecture.md, AGENTS.md
 
 ## Notes
 
@@ -27,3 +27,10 @@ They are recorded here because the fold should check they survived, not because 
 
 - Reporting caution worth keeping if `docs/architecture.md`'s wording is ever condensed: an absence of measurement must not render like a measurement.
   `fm-crew-state.sh` emits a distinct `unreadable` state for "the run source did not answer", separate from `unknown` for "there is no live run", and `fm-classify-lib.sh`'s `crew_absorb_class` is the single place either becomes an absorb decision.
+  The `unreadable` verdict is emitted BEFORE the endpoint and status-log fallbacks, because emit ORDER, not just the token, is what keeps it distinguishable: after those gates it would have surfaced as `unknown - source: none - backend target gone`, byte-identical to a measured stop.
+
+- Pending edit this task could not make itself, and the reason it is recorded here rather than done.
+  AGENTS.md line 344 still reads "Judge validation by the current-code-matched run step through `bin/fm-crew-state.sh`".
+  Under the attribution rule this task established, "current-code-matched" is no longer accurate: liveness is decided FIRST, and code identity only disambiguates FINISHED runs, so a live run the pipeline holds is attributed on branch alone even when its head is unresolvable in the crew worktree.
+  It should say the validation judgement comes from the run step `bin/fm-crew-state.sh` attributes to the crew, with code identity qualifying only a finished run.
+  Not edited here because a second firstmate lane held AGENTS.md exclusively while this task ran; `docs/architecture.md`'s equivalent sentence was corrected in this task's own diff.

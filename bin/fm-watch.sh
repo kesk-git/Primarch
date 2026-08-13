@@ -280,9 +280,13 @@ FM_WEDGE_DEMAND_INSPECT_COUNT=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
 # both places a hash can be absorbed this way: the plain non-terminal path,
 # and the stale_is_terminal-overridden path (a captain-relevant status-log
 # line that an active run/busy pane outranked).
-wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file>
-  local win=$1 since_file=$2 label=$3 escalation_file=$4 since age n reason
-  local task
+# <pane> is the caller's own busy observation for this same pane in this same
+# poll (the literal `busy`, or anything else when the pane is not busy). It is
+# REQUIRED, not inferred: the crew-state line cannot supply it (see
+# crew_run_is_active), and every route into this timer already computed it.
+wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <pane>
+  local win=$1 since_file=$2 label=$3 escalation_file=$4 pane=$5 since age n reason
+  local task verdict
   since=$(cat "$since_file" 2>/dev/null || true)
   case "$since" in
     ''|*[!0-9]*)
@@ -299,12 +303,18 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
         # time - so a crew whose pipeline run was progressing normally, or that
         # had since declared a bounded wait, re-alarmed every STALE_ESCALATE_SECS
         # for the whole run (measured: seven false escalations in one run). This
-        # costs one state read per escalation window per pane, not per poll.
-        if crew_run_is_active "$task"; then
+        # costs one state read per escalation window per pane, not per poll: every
+        # decision below is derived from this single verdict, so a second bounded
+        # no-mistakes call can neither stall the poll loop again nor disagree with
+        # the first about the same moment.
+        verdict=$(crew_absorb_verdict "$task")
+        if crew_run_is_active "$verdict" "$pane"; then
           # A run the pipeline owns is not a wedge: no-mistakes owns the crew for
           # the run's duration and an idle pane is its NORMAL shape. Deliberately
-          # narrower than crew_is_provably_working - a merely busy pane must keep
-          # escalating here, or BUSY_TURN_MAX_SECS would never fire.
+          # narrower than crew_is_provably_working - a BUSY pane must keep
+          # escalating here even while that run is live, or BUSY_TURN_MAX_SECS
+          # would never fire, which is why $pane is consulted and not just the
+          # verdict's source token.
           date +%s > "$since_file"
           rm -f "$escalation_file"
           triage_log "absorbed $label (pipeline-owned run active, not a wedge): $win"
@@ -319,7 +329,7 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
         # one.
         n=$(( $(cat "$escalation_file" 2>/dev/null || echo 0) + 1 ))
         echo "$n" > "$escalation_file"
-        if [ "$(crew_absorb_class "$task")" = unreadable ]; then
+        if [ "${verdict%% *}" = unreadable ]; then
           # Escalate, but never as a measured verdict about the crew: the guard
           # fired because the state could not be read, which is a different
           # problem from a crew that stopped, and needs a different look.
@@ -1102,7 +1112,7 @@ EOF
             # wedge timer is running for it) - keep treating it that way
             # without re-reading the crew state every poll, and without
             # letting the still-captain-relevant log line re-surface it.
-            wedge_timer_check "$w" "$ssf" "stale (overridden terminal status)" "$ewf"
+            wedge_timer_check "$w" "$ssf" "stale (overridden terminal status)" "$ewf" idle
           fi
           # else: already surfaced as genuinely terminal on a prior poll of
           # this same hash - nothing left to do (matches the original,
@@ -1145,12 +1155,12 @@ EOF
                 paused)  handle_paused_stale "$w" "$task" "$h" ;;
                 working) clear_pause_state "$w"
                          printf '%s' "$h" > "$sf"
-                         wedge_timer_check "$w" "$ssf" "non-terminal stale (provably working after a declared pause)" "$ewf"
+                         wedge_timer_check "$w" "$ssf" "non-terminal stale (provably working after a declared pause)" "$ewf" idle
                          triage_log "absorbed non-terminal stale (provably working): $w" ;;
                 *)       handle_paused_stale "$w" "$task" "$h" ;;
               esac
             else
-              wedge_timer_check "$w" "$ssf" "non-terminal stale" "$ewf"
+              wedge_timer_check "$w" "$ssf" "non-terminal stale" "$ewf" idle
             fi
           fi
         fi
@@ -1159,7 +1169,7 @@ EOF
         # unless a genuinely busy pane has gone too long with no completed turn -
         # then route it through the same wedge timer instead of erasing it.
         if [ "$busy_now" -eq 0 ] && busy_turn_over_age "$task"; then
-          wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf"
+          wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf" busy
         else
           rm -f "$ssf" "$ewf"
         fi
@@ -1171,7 +1181,7 @@ EOF
       printf '%s' "$h" > "$hf"
       echo 0 > "$cf"
       if [ "$busy_now" -eq 0 ] && busy_turn_over_age "$task"; then
-        wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf"
+        wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf" busy
       else
         rm -f "$ssf" "$ewf"
       fi

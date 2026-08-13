@@ -325,23 +325,77 @@ test_crew_absorb_class_classifier() {
   [ "$(crew_absorb_class a)" = unreadable ] || fail "unreadable verdict not classed unreadable"
   ! crew_is_provably_working a || fail "an unreadable verdict was treated as provably working"
   ! crew_is_paused a || fail "an unreadable verdict was treated as paused"
-  ! crew_run_is_active a || fail "an unreadable verdict was treated as an active run"
+  ! crew_run_is_active "$(crew_absorb_verdict a)" idle || fail "an unreadable verdict was treated as an active run"
   FM_FAKE_CREW_STATE='this is not a state line at all'
   [ "$(crew_absorb_class a)" = unreadable ] || fail "an unparseable verdict was classed as a measured state"
   [ "$(crew_absorb_class "")" = unreadable ] || fail "empty id (no measurement possible) not classed unreadable"
 
-  # crew_run_is_active is deliberately NARROWER than crew_is_provably_working:
-  # only a pipeline-owned run absorbs the wedge alarm, never a merely busy pane,
-  # or BUSY_TURN_MAX_SECS could never fire.
+  # crew_absorb_verdict is the ONE read both absorb questions are answered from,
+  # so it must carry the source alongside the class - deriving them from two
+  # reads costs two bounded no-mistakes calls and lets them disagree.
   FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
-  crew_run_is_active a || fail "an active run-step was not recognized as a live run"
+  [ "$(crew_absorb_verdict a)" = "working run-step" ] || fail "the one-read verdict lost the run-step source"
+  FM_FAKE_CREW_STATE='state: working · source: pane · harness busy'
+  [ "$(crew_absorb_verdict a)" = "working pane" ] || fail "the one-read verdict lost the pane source"
+  FM_FAKE_CREW_STATE='state: unreadable · source: run-source · could not be read'
+  [ "$(crew_absorb_verdict a)" = "unreadable run-source" ] || fail "the one-read verdict lost the unreadable source"
+
+  # crew_run_is_active is deliberately NARROWER than crew_is_provably_working:
+  # only a pipeline-owned run on an IDLE pane absorbs the wedge alarm, or
+  # BUSY_TURN_MAX_SECS could never fire. The verdict alone cannot decide that -
+  # fm-crew-state.sh settles the run-step verdict before it ever reads the pane,
+  # so a busy pane under a live run reports it identically to an idle one.
+  FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  crew_run_is_active "$(crew_absorb_verdict a)" idle || fail "an active run-step was not recognized as a live run"
+  ! crew_run_is_active "$(crew_absorb_verdict a)" busy \
+    || fail "a BUSY pane under a live pipeline run was absorbed, defeating BUSY_TURN_MAX_SECS"
   FM_FAKE_CREW_STATE='state: working · source: pane · harness busy'
   crew_is_provably_working a || fail "a busy pane stopped being provably working"
-  ! crew_run_is_active a || fail "a busy pane was mistaken for a pipeline-owned run"
+  ! crew_run_is_active "$(crew_absorb_verdict a)" idle || fail "a busy pane was mistaken for a pipeline-owned run"
   FM_FAKE_CREW_STATE='state: parked · source: run-step · parked at review'
-  ! crew_run_is_active a || fail "a parked run was treated as actively running"
+  ! crew_run_is_active "$(crew_absorb_verdict a)" idle || fail "a parked run was treated as actively running"
   unset FM_FAKE_CREW_STATE
-  pass "crew_absorb_class: working/paused/unreadable/none from one read, and crew_run_is_active narrows to a pipeline-owned run"
+  pass "crew_absorb_class: working/paused/unreadable/none from one read, and crew_run_is_active narrows to a pipeline-owned run on an idle pane"
+}
+
+# Every fm-crew-state.sh read is a subprocess that may make its own bounded
+# no-mistakes call, so the number of reads is a real cost, not bookkeeping: two
+# reads at one escalation stall the watcher's poll loop for up to twice
+# FM_CREW_STATE_NM_TIMEOUT and can disagree about the same moment, escalating a
+# run that went active in between as a possible wedge. This pins that both facts
+# the wedge guard needs come from ONE read - crew_run_is_active takes a verdict
+# rather than an id precisely so a second read is not constructible there.
+test_crew_absorb_verdict_reads_state_once() {
+  local dir fakebin calls verdict
+  dir=$(make_case absorb-verdict-one-read); fakebin="$dir/fakebin"
+  calls="$dir/reads"
+  : > "$calls"
+  cat > "$fakebin/counting-crew-state.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$1" >> "$FM_TEST_READ_COUNT_FILE"
+printf 'state: working · source: run-step · validating (running)\n'
+exit 0
+SH
+  chmod +x "$fakebin/counting-crew-state.sh"
+  export FM_TEST_READ_COUNT_FILE="$calls"
+  export FM_CREW_STATE_BIN="$fakebin/counting-crew-state.sh"
+
+  verdict=$(crew_absorb_verdict a)
+  [ "$(awk 'END { print NR + 0 }' "$calls")" -eq 1 ] \
+    || fail "crew_absorb_verdict read the crew state more than once"
+  # Both wedge-guard decisions now come out of that single verdict.
+  [ "${verdict%% *}" != unreadable ] || fail "the one read lost the class"
+  crew_run_is_active "$verdict" idle || fail "the one read lost the live-run fact"
+  [ "$(awk 'END { print NR + 0 }' "$calls")" -eq 1 ] \
+    || fail "deriving the live-run decision cost a second crew-state read"
+
+  : > "$calls"
+  crew_is_provably_working a || fail "the delegating predicate lost its verdict"
+  [ "$(awk 'END { print NR + 0 }' "$calls")" -eq 1 ] \
+    || fail "crew_is_provably_working no longer costs exactly one read"
+  unset FM_TEST_READ_COUNT_FILE FM_CREW_STATE_BIN
+  pass "one crew-state read answers both wedge-guard questions"
 }
 
 # signal_crew_provably_working: a no-verb "signal:" wake is benign ONLY when EVERY
@@ -690,6 +744,64 @@ test_busy_pane_alone_still_wedge_escalates() {
   grep -F "possible wedge" "$out" >/dev/null || { unset FM_FAKE_CREW_STATE; fail "busy-pane escalation did not flag a possible wedge"; }
   unset FM_FAKE_CREW_STATE
   pass "a busy pane alone still wedge-escalates, so BUSY_TURN_MAX_SECS keeps its bound"
+}
+
+# The absorb inverting on itself. fm-crew-state.sh settles the run-step verdict
+# BEFORE it ever reads the pane, so a busy pane whose branch has a live
+# attributed run reports `working · run-step` byte-identically to an idle one.
+# Deciding the wedge absorb on that source token alone therefore also silences a
+# pane hung in a foreground tool call, resetting its timer on every escalation
+# window so BUSY_TURN_MAX_SECS - the only bound that catches one - can never
+# fire. The case above cannot see this: `working · source: pane` is only
+# reachable when NO run is attributed at all.
+test_busy_pane_under_live_run_still_wedge_escalates() {
+  local dir state fakebin out capture_file window key pane_hash sig pid
+  dir=$(make_case busy-pane-live-run); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-busy-liverun"
+  printf 'Working...' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/busy-liverun.meta"
+  record_pi_busy "$state" busy-liverun
+  printf 'working: setup complete\n' > "$state/busy-liverun.status"
+  sig=$(seen_sig "$state/busy-liverun.status"); printf '%s' "$sig" > "$state/.seen-busy-liverun_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "Working...")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  # No completed turn ever recorded for this task: age the spawn record itself.
+  touch -t 200001010000 "$state/busy-liverun.meta"
+  # The crew's branch HAS a live pipeline-owned run - the exact verdict the idle
+  # absorb is built to honour - while the pane itself is hung in a foreground
+  # call past its turn bound.
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+
+  # Phase A: past the turn-age bound, the busy pane starts the wedge timer.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; unset FM_FAKE_CREW_STATE
+    fail "a busy pane under a live run escalated before the wedge threshold: $(cat "$out")"
+  fi
+  [ -s "$state/.stale-since-$key" ] || { reap "$pid"; unset FM_FAKE_CREW_STATE; fail "a busy pane past the turn-age bound did not start a wedge timer"; }
+  reap "$pid"
+  ack_stopped_cycle "$state" || { unset FM_FAKE_CREW_STATE; fail "could not acknowledge the intentional phase-A stop"; }
+
+  # Phase B: backdate the timer past the threshold. The live run must NOT absorb
+  # this pane, and must not reset its timer either.
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || { reap "$pid"; unset FM_FAKE_CREW_STATE; fail "a busy pane past BUSY_TURN_MAX_SECS was absorbed by its branch's live run - the bound can never fire"; }
+  grep -F "stale: $window" "$out" >/dev/null || { unset FM_FAKE_CREW_STATE; fail "the busy turn-age escalation did not print the stale wake"; }
+  grep -F "possible wedge" "$out" >/dev/null || { unset FM_FAKE_CREW_STATE; fail "the busy turn-age escalation did not flag a possible wedge"; }
+  unset FM_FAKE_CREW_STATE
+  pass "a busy pane past BUSY_TURN_MAX_SECS still wedge-escalates while its branch's run is live"
 }
 
 # --- a declared bounded external wait is never a possible wedge ---------------
@@ -2054,6 +2166,7 @@ test_classifier_primitives
 test_crew_is_provably_working_classifier
 test_status_is_paused_classifier
 test_crew_absorb_class_classifier
+test_crew_absorb_verdict_reads_state_once
 test_signal_crew_provably_working_classifier
 test_provably_working_signal_absorbed
 test_turn_ended_provably_working_absorbed
@@ -2065,6 +2178,7 @@ test_stale_terminal_status_overridden_by_active_run
 test_nonterminal_stale_provably_working_absorbed_then_escalated
 test_active_run_not_wedge_escalated_past_threshold
 test_busy_pane_alone_still_wedge_escalates
+test_busy_pane_under_live_run_still_wedge_escalates
 test_declared_pause_never_wedge_escalates
 test_unreadable_state_escalates_without_claiming_a_wedge
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold

@@ -629,35 +629,55 @@ signal_reason_is_actionable() {  # <file> ...
 # run it only on no-verb signal and first-sighting stale paths, never every wake.
 # FM_CREW_STATE_BIN lets tests stub the verdict.
 crew_absorb_class() {  # <id>
-  local id=$1 line state src
-  [ -n "$id" ] || { printf 'unreadable'; return; }
-  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
-  # An unparseable verdict is an absence of measurement, not a stopped crew.
-  case "$line" in state:*) ;; *) printf 'unreadable'; return ;; esac
-  state=${line#state: }; state=${state%% *}
-  if [ "$state" = unreadable ]; then printf 'unreadable'; return; fi
-  if [ "$state" = paused ]; then printf 'paused'; return; fi
-  if [ "$state" = working ]; then
-    src=${line#*source: }; src=${src%% *}
-    case "$src" in run-step|pane) printf 'working'; return ;; esac
-  fi
-  printf 'none'
+  local verdict
+  verdict=$(crew_absorb_verdict "$1")
+  printf '%s' "${verdict%% *}"
 }
 
-# 0 when crew <id> is working AND that evidence is a PIPELINE-OWNED RUN, not a
-# busy pane. The wedge guard needs this narrower question: an active run is
-# owned by no-mistakes and legitimately idles the pane for its whole duration,
-# whereas a busy pane is the crew's own foreground work and stays bounded by
-# BUSY_TURN_MAX_SECS - absorbing on a busy pane would defeat that bound.
-crew_run_is_active() {  # <id>
-  local line state src
-  [ -n "$1" ] || return 1
-  line=$("$FM_CREW_STATE_BIN" "$1" 2>/dev/null) || true
-  case "$line" in state:*) ;; *) return 1 ;; esac
+# ONE fm-crew-state.sh read, rendered as the two tokens every absorb decision is
+# made from: "<class> <source>", where <class> is crew_absorb_class's verdict and
+# <source> is the crew-state line's own source token (run-step, pane, status-log,
+# run-source, none). A caller that needs more than one fact about the same moment
+# reads this once and splits it: each read is a subprocess that may make its own
+# bounded no-mistakes call, so a second one both doubles the poll-loop stall and
+# can disagree with the first about a crew whose state changed in between.
+crew_absorb_verdict() {  # <id>
+  local id=$1 line state src=none
+  [ -n "$id" ] || { printf 'unreadable none'; return; }
+  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  # An unparseable verdict is an absence of measurement, not a stopped crew.
+  case "$line" in state:*) ;; *) printf 'unreadable none'; return ;; esac
   state=${line#state: }; state=${state%% *}
-  [ "$state" = working ] || return 1
-  src=${line#*source: }; src=${src%% *}
-  [ "$src" = run-step ]
+  case "$line" in *'source: '*) src=${line#*source: }; src=${src%% *} ;; esac
+  case "$state" in
+    unreadable) printf 'unreadable %s' "$src"; return ;;
+    paused)     printf 'paused %s' "$src"; return ;;
+    working)
+      case "$src" in run-step|pane) printf 'working %s' "$src"; return ;; esac
+      ;;
+  esac
+  printf 'none %s' "$src"
+}
+
+# 0 when a wedge alarm may be absorbed because a run the PIPELINE owns is live on
+# this crew. The wedge guard needs this narrower question than "provably
+# working": an active run is owned by no-mistakes and legitimately idles the pane
+# for its whole duration, whereas a busy pane is the crew's own foreground work
+# and stays bounded by BUSY_TURN_MAX_SECS - absorbing on a busy pane would defeat
+# that bound, the only one that catches a hung foreground tool call.
+#
+# Both arguments are required because NEITHER answers the question alone.
+# <verdict> comes from one crew_absorb_verdict read; <pane> is the caller's OWN
+# observation of that same pane in that same poll (the literal `busy`, or
+# anything else for a pane that is not busy). fm-crew-state.sh decides the
+# run-step verdict BEFORE it ever reads the pane, so a busy pane whose branch has
+# a live run reports `working - run-step` byte-identically to an idle one:
+# deciding on the source token alone would silence exactly the wedged pane this
+# guard exists to catch. The asymmetry is the point - an idle pane under a live
+# run is that run's normal shape, a busy pane past its turn bound never is.
+crew_run_is_active() {  # <verdict> <pane>
+  if [ "$2" = busy ]; then return 1; fi
+  [ "$1" = "working run-step" ]
 }
 
 # 0 if crew <id> shows POSITIVE evidence it is still working (crew_absorb_class

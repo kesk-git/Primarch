@@ -1613,6 +1613,47 @@ test_unreadable_run_source_does_not_spend_the_status_log() {
   pass "an unreadable run source does not fall through to the status log"
 }
 
+# A dead endpoint must not PRE-EMPT the unreadable verdict. This reader
+# deliberately treats an attributed run as authoritative even when the pane has
+# closed, so while it is still unknown whether a run owns this crew, a gone
+# endpoint cannot establish that the crew stopped. Reported the other way round,
+# a timed-out run source on a closed pane renders `unknown - source: none -
+# backend target gone`, byte-identical to a crew measured as stopped - and that
+# is the input stuck-crewmate-recovery turns into a relaunch, which would split
+# one task across two workers.
+test_unreadable_run_source_outranks_a_dead_endpoint() {
+  reset_fakes
+  local d unreadable stopped
+  d=$(new_case unreadable-dead-endpoint)
+  make_repo_on_branch "$d/wt" fm/feat-unread-dead
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/gone.meta" "window=fm:fm-gone" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: last thing it said\n' > "$d/state/gone.status"
+  FM_FAKE_TMUX_MISSING=1
+
+  # (1) the run source timed out AND the pane is gone
+  FM_FAKE_NM_EXIT=124
+  FM_FAKE_AXI_STATUS=""
+  unreadable=$(run_crew_state "$d" gone)
+
+  # (2) the run source answered "no live run", and the pane is gone: a MEASURED
+  # stop, the one case that legitimately reads unknown - none.
+  FM_FAKE_NM_EXIT=0
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  stopped=$(run_crew_state "$d" gone)
+
+  assert_contains "$unreadable" "state: unreadable" \
+    "a dead endpoint pre-empted the unreadable verdict into a measured-looking one"
+  assert_contains "$unreadable" "could not be read" "an unreadable state must still say why"
+  assert_not_contains "$unreadable" "backend target gone" \
+    "a gone endpoint must not stand in for the run answer that never arrived"
+  assert_contains "$stopped" "state: unknown" "a measured stop still reads unknown"
+  [ "$unreadable" != "$stopped" ] \
+    || fail "an unread run source and a measured stop rendered identically on a dead endpoint"
+  pass "a dead endpoint cannot pre-empt the unreadable verdict into a measured stop"
+}
+
 test_active_run_is_authoritative
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded
@@ -1670,5 +1711,6 @@ test_live_parked_run_keeps_gate_detail_when_head_unresolvable
 test_finished_run_not_attributed_on_branch_sync_alone
 test_unreadable_run_source_is_distinguishable
 test_unreadable_run_source_does_not_spend_the_status_log
+test_unreadable_run_source_outranks_a_dead_endpoint
 
 echo "all fm-crew-state tests passed"
