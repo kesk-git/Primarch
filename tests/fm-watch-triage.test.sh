@@ -886,6 +886,47 @@ test_unreadable_state_escalates_without_claiming_a_wedge() {
   pass "an unreadable current state still escalates, reported as unconfirmed rather than as a wedge"
 }
 
+# N escalation windows with NO measurement at all is exactly when a deep look is
+# most warranted, so the threshold marker must fire for an unreadable verdict
+# too. Its instruction differs from the wedge one - there is no state to
+# re-absorb on - but the marker itself, and the `, escalation <n>` token the AFK
+# daemon keys on, must be present in both shapes.
+test_unreadable_escalation_reaches_demand_deep_inspection() {
+  local dir state fakebin out capture_file window key pane_hash sig pid
+  dir=$(make_case unreadable-deep-inspect); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-unread-deep"
+  printf 'idle building output' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/unread-deep.meta"
+  printf 'working: still compiling\n' > "$state/unread-deep.status"
+  sig=$(seen_sig "$state/unread-deep.status"); printf '%s' "$sig" > "$state/.seen-unread-deep_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle building output")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  echo $(( $(date +%s) - 5000 )) > "$state/.stale-since-$key"
+  # One below the threshold, so this poll's escalation is the Nth in a row.
+  printf '2\n' > "$state/.wedge-escalations-$key"
+  export FM_FAKE_CREW_STATE='state: unreadable · source: run-source · validation state could not be read (no-mistakes did not answer within 10s)'
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || { reap "$pid"; unset FM_FAKE_CREW_STATE; fail "a repeatedly unreadable pane was absorbed instead of escalated"; }
+  grep -F "demand-deep-inspection" "$out" >/dev/null \
+    || { unset FM_FAKE_CREW_STATE; fail "a repeatedly unreadable pane never reached the demand-deep-inspection threshold"; }
+  grep -F ", escalation 3" "$out" >/dev/null \
+    || { unset FM_FAKE_CREW_STATE; fail "the unreadable reason lost the escalation marker the AFK daemon keys on"; }
+  grep -F "possible wedge" "$out" >/dev/null \
+    && { unset FM_FAKE_CREW_STATE; fail "the deep-inspection unreadable reason claimed a measured wedge verdict"; }
+  grep -F "run source is not answering" "$out" >/dev/null \
+    || { unset FM_FAKE_CREW_STATE; fail "the unreadable deep-inspection instruction was the wedge one"; }
+  unset FM_FAKE_CREW_STATE
+  pass "a repeatedly unreadable pane reaches demand-deep-inspection with its own instruction"
+}
+
 # --- non-terminal stale, crew NOT provably working: surfaced immediately ------
 # The key requirement: a crew with no running pipeline that has gone quiet (and is
 # not busy) has stopped - it may be done via interactive menus, waiting, or wedged.
@@ -2181,6 +2222,7 @@ test_busy_pane_alone_still_wedge_escalates
 test_busy_pane_under_live_run_still_wedge_escalates
 test_declared_pause_never_wedge_escalates
 test_unreadable_state_escalates_without_claiming_a_wedge
+test_unreadable_escalation_reaches_demand_deep_inspection
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold
 test_wedge_escalation_resets_when_pane_becomes_active
 test_busy_pane_below_turn_age_bound_is_absorbed

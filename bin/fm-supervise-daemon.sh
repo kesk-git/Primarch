@@ -1214,8 +1214,15 @@ handle_wake() {  # <reason> <state>
     stale:*)  kind=stale; arg="${reason#stale: }"; stale_detail="${arg#"$arg"}"
               case "$arg" in *" ("*) stale_detail="${arg#*" ("}"; arg="${arg%% \(*}" ;; esac
               decision=$(classify_stale "$arg" "$state")
+              # bin/fm-watch.sh's wedge timer already decided this pane needs a
+              # look and stamped the window count into the reason. Match that
+              # ESCALATION MARKER, not the prose that happens to precede it:
+              # the same timer emits a different verdict phrase when the crew's
+              # state could not be read at all, and matching prose silently
+              # self-handled exactly the wake meaning "nobody could measure this
+              # crew". No other stale reason carries the marker.
               case "$stale_detail" in
-                idle\ *s,\ possible\ wedge,\ escalation\ *)
+                *,\ escalation\ [0-9]*)
                   decision="escalate|${reason#stale: }" ;;
               esac ;;
     check:*)  decision=$(classify_check "$reason") ;;

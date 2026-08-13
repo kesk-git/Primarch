@@ -372,8 +372,15 @@ MODEL=$(printf '%s' "$SNAP" | jq \
        | select(.backlog.current_role != "held" or .current_state.state == "working")
        | {id, kind,
         state: .current_state.state,
+        # A crew whose state could not be read is deliberately kept in this list
+        # rather than hidden - it is exactly the row a reader must see - but it
+        # is LABELLED, because Underway otherwise asserts self-progressing about
+        # a crew nobody measured.
         doing: ((.current_state.detail // "") as $d
-                | (if $d != "" then $d else (.hints.last_event_text // "") end) | trunc(90))
+                | (if $d != "" then $d else (.hints.last_event_text // "") end) as $t
+                | (if .current_state.state == "unreadable"
+                   then "state could not be read, not confirmed progressing: " + $t
+                   else $t end) | trunc(90))
       } ]
      + [ $secondmate_views[]
          | select(.bearings_state == "active_child_work")

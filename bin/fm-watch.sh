@@ -286,7 +286,7 @@ FM_WEDGE_DEMAND_INSPECT_COUNT=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
 # crew_run_is_active), and every route into this timer already computed it.
 wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <pane>
   local win=$1 since_file=$2 label=$3 escalation_file=$4 pane=$5 since age n reason
-  local task verdict
+  local task verdict verdict_note deep_note
   since=$(cat "$since_file" 2>/dev/null || true)
   case "$since" in
     ''|*[!0-9]*)
@@ -332,13 +332,22 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
         if [ "${verdict%% *}" = unreadable ]; then
           # Escalate, but never as a measured verdict about the crew: the guard
           # fired because the state could not be read, which is a different
-          # problem from a crew that stopped, and needs a different look.
-          reason="stale: $win (idle ${age}s, current state unreadable - could not confirm whether this crew is working, escalation $n)"
+          # problem from a crew that stopped, and needs a different look. The
+          # threshold marker still applies - N windows with no measurement at
+          # all is exactly when a deep look is most warranted - but its
+          # instruction differs, because there is no state to re-absorb on.
+          verdict_note="current state unreadable - could not confirm whether this crew is working"
+          deep_note="this pane's state has been unreadable for $n escalation windows in a row - find out why the run source is not answering before judging the crew"
         else
-          reason="stale: $win (idle ${age}s, possible wedge, escalation $n)"
-          if [ "$n" -ge "$FM_WEDGE_DEMAND_INSPECT_COUNT" ]; then
-            reason="stale: $win (idle ${age}s, possible wedge, escalation $n, demand-deep-inspection: same pane has wedge-escalated $n times in a row - do not re-absorb on the run-step/pane state alone)"
-          fi
+          verdict_note="possible wedge"
+          deep_note="same pane has wedge-escalated $n times in a row - do not re-absorb on the run-step/pane state alone"
+        fi
+        # `, escalation <n>` is the stable marker bin/fm-supervise-daemon.sh
+        # matches to force escalation past its own self-handling, so it must
+        # appear in EVERY shape this reason takes.
+        reason="stale: $win (idle ${age}s, $verdict_note, escalation $n)"
+        if [ "$n" -ge "$FM_WEDGE_DEMAND_INSPECT_COUNT" ]; then
+          reason="stale: $win (idle ${age}s, $verdict_note, escalation $n, demand-deep-inspection: $deep_note)"
         fi
         fm_wake_append stale "$win" "$reason" || exit 1
         rm -f "$since_file"

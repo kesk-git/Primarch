@@ -29,6 +29,17 @@ They are recorded here because the fold should check they survived, not because 
   `fm-crew-state.sh` emits a distinct `unreadable` state for "the run source did not answer", separate from `unknown` for "there is no live run", and `fm-classify-lib.sh`'s `crew_absorb_class` is the single place either becomes an absorb decision.
   The `unreadable` verdict is emitted BEFORE the endpoint and status-log fallbacks, because emit ORDER, not just the token, is what keeps it distinguishable: after those gates it would have surfaced as `unknown - source: none - backend target gone`, byte-identical to a measured stop.
 
+- Adding a state token to `bin/fm-crew-state.sh`'s emitted line does NOT reach its consumers, because each one ENUMERATES the tokens it cares about at its own site rather than asking a shared owner.
+  Three separate consumers silently mishandled the new `unreadable` token in this task: `bin/fm-supervise-daemon.sh` (matched the wedge reason's PROSE, so the AFK path self-handled the one wake meaning "nobody could measure this crew"), `bin/fm-fleet-snapshot.sh` (counted only `unknown` as an unavailable child, so a home with an unmeasured child published as a valid `no_active_work`), and `bin/fm-bearings-snapshot.sh` (passed it through into Underway unlabelled).
+  Each was reachable, and each turned an absence of measurement back into a measured answer.
+  The enumerate-at-each-site pattern will produce a fourth: the durable fix is an owner that makes an unhandled token unconstructible rather than a list to remember at every site.
+  Deliberately not attempted in this round; the evidence above is what it should be scoped from.
+
+- A crew's persisted busy record (`state/<id>.busy-state`) is validated by GENERATION match only, with no time expiry, so it keeps reading `busy` indefinitely after the agent process exits.
+  Any consumer that reads it must confirm the endpoint still exists first, or it reports a dead crew as a measured `working`.
+  `fm_busy_classify_live` is the form that carries the dead-endpoint precedence; plain `fm_busy_classify` does not.
+  Measured 2026-08-13 on two crews whose agent had exited while the pipeline run stayed alive (pane showed `pane_current_command=zsh` and the harness's own "Resume this session with: claude --resume <id>" tail); their correct wedge alarms were absorbed by hand as false ones.
+
 - Pending edit this task could not make itself, and the reason it is recorded here rather than done.
   AGENTS.md line 344 still reads "Judge validation by the current-code-matched run step through `bin/fm-crew-state.sh`".
   Under the attribution rule this task established, "current-code-matched" is no longer accurate: liveness is decided FIRST, and code identity only disambiguates FINISHED runs, so a live run the pipeline holds is attributed on branch alone even when its head is unresolvable in the crew worktree.

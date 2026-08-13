@@ -75,7 +75,11 @@ case "${1:-}" in
     esac
     ;;
   runs)
-    printf '%s\n' "${FM_FAKE_RUNS_LIST:-}" ;;
+    printf '%s\n' "${FM_FAKE_RUNS_LIST:-}"
+    # The coarse listing is a SEPARATE bounded call from `axi status`, so it can
+    # fail to complete on its own (a loaded host, after the primary call already
+    # answered). FM_FAKE_NM_RUNS_EXIT models exactly that, independently.
+    exit "${FM_FAKE_NM_RUNS_EXIT:-${FM_FAKE_NM_EXIT:-0}}" ;;
 esac
 # FM_FAKE_NM_EXIT models the bounded call FAILING TO COMPLETE (124 = timed out,
 # >128 = killed) as opposed to answering. fm-crew-state.sh discriminates on
@@ -199,8 +203,20 @@ reset_fakes() {
   FM_FAKE_HERDR_AGENT_STATUS=""
   FM_FAKE_CI_LOGS=""
   FM_FAKE_NM_EXIT=0
+  FM_FAKE_NM_RUNS_EXIT=""
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS FM_FAKE_NM_EXIT
+  export FM_FAKE_NM_RUNS_EXIT
+}
+
+# A busy record with a MATCHING generation, i.e. exactly what a crew killed
+# mid-turn leaves behind: the record is validated by gen match with no time
+# expiry, so it keeps reading `busy` long after the agent is gone.
+arm_busy_record() {  # <state-dir> <id>
+  local state=$1 id=$2 gen
+  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" "$id")
+  "$ROOT/bin/fm-busy-event.sh" apply "$state" "$id" busy --gen "$gen" \
+    --source claude-hook --event user-prompt-submit
 }
 
 # A commit that genuinely does NOT exist in the crew worktree's object store,
@@ -1654,6 +1670,123 @@ test_unreadable_run_source_outranks_a_dead_endpoint() {
   pass "a dead endpoint cannot pre-empt the unreadable verdict into a measured stop"
 }
 
+# The persisted busy record is validated by generation match with NO time
+# expiry, so a crew whose agent process exits mid-turn leaves `state=busy` on
+# disk indefinitely. Reading it without first confirming the pane still exists
+# INVENTS a measurement: a dead crew reported as `working`, which every absorb
+# predicate downstream then spends. Measured live 2026-08-13 on two crews whose
+# agent had exited while their pipeline run stayed alive; the wedge alarms that
+# followed were correct and were absorbed by hand as false ones.
+test_dead_endpoint_busy_record_never_reports_working() {
+  reset_fakes
+  local d gone live measured
+  d=$(new_case busy-record-dead-endpoint)
+  make_repo_on_branch "$d/wt" fm/feat-ghost
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/ghost.meta" "window=fm:fm-ghost" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: last thing it said\n' > "$d/state/ghost.status"
+  # The record a crew killed mid-turn leaves behind.
+  arm_busy_record "$d/state" ghost
+  FM_FAKE_BUSY=1
+
+  # (1) the agent is gone (endpoint unreadable) AND the run source timed out
+  FM_FAKE_TMUX_MISSING=1
+  FM_FAKE_NM_EXIT=124
+  FM_FAKE_AXI_STATUS=""
+  gone=$(run_crew_state "$d" ghost)
+
+  # (2) the same stale record, but the run source ANSWERED "no live run": the
+  # dead endpoint is then a real measurement of a stopped crew.
+  FM_FAKE_NM_EXIT=0
+  FM_FAKE_RUNS_LIST=""
+  measured=$(run_crew_state "$d" ghost)
+
+  # (3) control: the endpoint is READABLE, so an exact busy verdict is a genuine
+  # measurement and still answers even while the run source is unread.
+  FM_FAKE_TMUX_MISSING=0
+  FM_FAKE_NM_EXIT=124
+  live=$(run_crew_state "$d" ghost)
+  FM_FAKE_NM_EXIT=0
+
+  assert_not_contains "$gone" "state: working" \
+    "a stale busy record on a gone endpoint was reported as a measured working crew"
+  assert_contains "$gone" "state: unreadable" \
+    "a gone endpoint with an unread run source must report unreadable"
+  assert_not_contains "$measured" "state: working" \
+    "a stale busy record on a gone endpoint invented working even with the run source answered"
+  assert_contains "$measured" "backend target gone" \
+    "a measured no-run crew on a gone endpoint still reports the dead endpoint"
+  assert_contains "$live" "state: working" \
+    "a busy verdict on a READABLE endpoint is a measurement and must still answer"
+  assert_contains "$live" "source: pane" "the live busy verdict names its source"
+  pass "a busy record can never report working for a pane that no longer exists"
+}
+
+# RUN_READ is the ONE owner of "did the run source answer", and the coarse runs
+# listing is a second bounded call to that same source. An unanswered listing is
+# byte-indistinguishable from "this branch has no rows" unless the same
+# completion rule is applied to it, and this change WIDENED reliance on that
+# listing (an active row now attributes on branch alone).
+test_unreadable_coarse_listing_is_not_a_measured_absence() {
+  reset_fakes
+  local d unread answered
+  d=$(new_case coarse-listing-unreadable)
+  make_repo_on_branch "$d/wt" fm/feat-coarse-unread
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/coarse.meta" "window=fm:fm-coarse" "worktree=$d/wt" "kind=ship" "harness=claude"
+  # A `working:` tail is exactly the shape that used to be spent as current
+  # state here, which is the original defect symptom.
+  printf 'working: still validating\n' > "$d/state/coarse.status"
+  arm_idle_record "$d/state" coarse
+  FM_FAKE_BUSY=0
+  # `axi status` answers, but for ANOTHER branch, so attribution falls to the
+  # coarse listing - the documented residual path.
+  FM_FAKE_AXI_STATUS="$(run_running fm/some-other-branch)"
+
+  # (1) the coarse listing itself never completes
+  FM_FAKE_NM_RUNS_EXIT=124
+  FM_FAKE_RUNS_LIST=""
+  unread=$(run_crew_state "$d" coarse)
+
+  # (2) the coarse listing answers, and this branch genuinely has no rows
+  FM_FAKE_NM_RUNS_EXIT=0
+  answered=$(run_crew_state "$d" coarse)
+
+  assert_contains "$unread" "state: unreadable" \
+    "an unanswered coarse listing was spent as a measured absence"
+  assert_not_contains "$unread" "source: status-log" \
+    "an unanswered coarse listing promoted a stale event line to current state"
+  assert_contains "$answered" "source: status-log" \
+    "a coarse listing that answered still permits the measured status-log fallback"
+  [ "$unread" != "$answered" ] \
+    || fail "an unanswered coarse listing and a measured no-rows listing rendered identically"
+  pass "an unanswered coarse runs listing reports unreadable, not a measured absence"
+}
+
+# fm_nm_status_is_active is the ONE owner of which coarse status words mean the
+# pipeline is still running a row, and it accepts `pending`. A queued run - now
+# attributed on branch alone - must map to a state that says so, not fall
+# through to `unknown`, which downstream reads as the crew having stopped.
+test_coarse_pending_row_reports_working() {
+  reset_fakes
+  local d out
+  d=$(new_case coarse-pending)
+  make_repo_on_branch "$d/wt" fm/feat-queued
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/queued.meta" "window=fm:fm-queued" "worktree=$d/wt" "kind=ship" "harness=claude"
+  : > "$d/state/queued.status"
+  arm_idle_record "$d/state" queued
+  FM_FAKE_BUSY=0
+  FM_FAKE_AXI_STATUS="$(run_running fm/some-other-branch)"
+  FM_FAKE_RUNS_LIST="pending fm/feat-queued $(git -C "$d/wt" rev-parse --short HEAD) 2026-08-13"
+  out=$(run_crew_state "$d" queued)
+  assert_contains "$out" "state: working" "a queued run on this branch is not a stopped crew"
+  assert_contains "$out" "source: run-step" "a queued run is attributed to the run source"
+  assert_not_contains "$out" "runs list status: pending" \
+    "the coarse mapping fell through to the unrecognized-status arm"
+  pass "a queued (pending) coarse row reports working, matching the shared active vocabulary"
+}
+
 test_active_run_is_authoritative
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded
@@ -1712,5 +1845,8 @@ test_finished_run_not_attributed_on_branch_sync_alone
 test_unreadable_run_source_is_distinguishable
 test_unreadable_run_source_does_not_spend_the_status_log
 test_unreadable_run_source_outranks_a_dead_endpoint
+test_dead_endpoint_busy_record_never_reports_working
+test_unreadable_coarse_listing_is_not_a_measured_absence
+test_coarse_pending_row_reports_working
 
 echo "all fm-crew-state tests passed"

@@ -8,9 +8,10 @@
 # or blocked and the crew resumes (responds to the gate, the pipeline fixes, it
 # re-validates), the log's last line stays stale. This helper never infers the
 # current state from a tail of the log: it reads the authoritative source (a
-# no-mistakes run-step attributed to this crew's branch and current code
-# identity, else the pane busy-signature) and reconciles the possibly-stale log
-# against it.
+# no-mistakes run-step attributed to this crew's branch - on branch alone while
+# the pipeline still holds the run, with code identity qualifying only a
+# FINISHED one - else the pane busy-signature) and reconciles the possibly-stale
+# log against it.
 #
 # The determinism lives entirely here - only run-step / pane / log reads plus
 # fixed mapping logic, no heuristics and no LLM. Output is one stable, parseable,
@@ -58,19 +59,23 @@
 #      the run-step shows the run moved on, the log is deterministically stale and
 #      is flagged superseded. A genuinely parked run plus a needs-decision log
 #      agree, and are reported as parked.
-#   4. No run for this crew (pre-validation, or kind=scout): fall back to the
-#      recorded backend's pane busy state, then the status log's last line only
-#      when its verb maps to a recognized run-state. Decision-only events such as
-#      `resolved` never become current state or detail.
+#   4. No run for this crew (pre-validation, or kind=scout): probe the endpoint,
+#      then fall back to the recorded backend's pane busy state, then the status
+#      log's last line only when its verb maps to a recognized run-state.
+#      Decision-only events such as `resolved` never become current state or
+#      detail. The endpoint probe gates the busy read unconditionally: the busy
+#      record has no time expiry, so reading it for a pane that no longer exists
+#      would report a dead crew as a measured `working`.
 #   5. Missing meta or torn-down worktree: report unknown · none. If no run is
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
 #      than trusting a stale status log. If the run source itself never answered,
-#      report unreadable · run-source instead, and suppress every NEGATIVE
-#      fallback verdict (missing target, dead endpoint, unavailable harness
-#      state, status log) so none of them can pre-empt it into a measured-looking
-#      unknown · none: until the run question is answered nothing here can
-#      establish that the crew stopped. Only a positive direct measurement - an
-#      exact busy verdict - still answers, because that one IS a measurement.
+#      report unreadable · run-source instead, and route every NEGATIVE fallback
+#      verdict (missing target, dead endpoint, unavailable harness state, status
+#      log) into it rather than letting any of them pre-empt it into a
+#      measured-looking unknown · none: until the run question is answered
+#      nothing here can establish that the crew stopped. Only a positive direct
+#      measurement of a LIVE endpoint - an exact busy verdict on a readable pane
+#      - still answers, because that one IS a measurement.
 #
 # Read-only and side-effect free. Always exits 0 on a successful read regardless
 # of state; exit 2 only on a usage error (no id).
@@ -206,6 +211,17 @@ trim() { fm_nm_trim "$@"; }
 strip_quotes() { fm_nm_strip_quotes "$@"; }
 nm_run() {  # <args...>
   fm_nm_run "$WT" "$NM_TIMEOUT" "$@"
+}
+
+# 0 when a bounded no-mistakes call NEVER COMPLETED, so nothing was learned: it
+# timed out (124), was killed by a signal (>128), or there was no timeout
+# mechanism to bound it at all (fm_nm_run_bounded returns 1 with no output).
+# The discrimination is on COMPLETION, not on whether anything was printed: an
+# exit-0 silence is a real answer ("no run"), while a silent timeout is not.
+# ONE owner, so every run-source call feeds RUN_READ by the same rule instead of
+# each call site inventing its own honesty test.
+nm_read_incomplete() {  # <exit-code> <output>
+  [ "$1" -eq 124 ] || [ "$1" -gt 128 ] || { [ "$1" -ne 0 ] && [ -z "$2" ]; }
 }
 
 # Scalar value of a TOON key in the captured run output ($RUN_OUT).
@@ -363,9 +379,21 @@ nm_ci_checks_state() {
 # is a run for THIS branch active right now. Echoes the first (most recent)
 # matching row's status word (running/completed/cancelled/failed), or empty
 # when the branch has no run within FM_CREW_STATE_RUNS_LIMIT rows.
+#
+# Sets COARSE_STATUS rather than printing it, so a call that never completed can
+# also set RUN_READ - a command substitution would trap that in a subshell and
+# leave an unanswered listing byte-indistinguishable from "this branch has no
+# rows", which is the same collapse RUN_READ exists to prevent on the primary
+# call. RUN_READ stays the ONE owner of "did the run source answer".
 nm_runs_status_for_branch() {  # <branch>
-  local branch=$1 out row st rest br sha
-  out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
+  local branch=$1 out rc row st rest br sha
+  COARSE_STATUS=""
+  out=$(fm_nm_run_checked "$WT" "$NM_TIMEOUT" runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
+  rc=$?
+  if nm_read_incomplete "$rc" "$out"; then
+    RUN_READ=unreadable
+    return 0
+  fi
   [ -n "$out" ] || return 0
   while IFS= read -r row; do
     row=$(trim "$row")
@@ -387,11 +415,11 @@ nm_runs_status_for_branch() {  # <branch>
       # rounds into its own clone, so the run head is routinely unresolvable
       # in this worktree exactly while the run is healthiest
       # (fm_nm_head_matches_worktree's note owns the mechanism).
-      printf '%s' "$st"
+      COARSE_STATUS=$st
     elif nm_coarse_head_matches_worktree "$sha"; then
       # A FINISHED row must still prove code identity, so a historical run on
       # a reused or rewritten branch is never attributed to current code.
-      printf '%s' "$st"
+      COARSE_STATUS=$st
     fi
     return 0
   done <<< "$out"
@@ -482,12 +510,7 @@ RUN_READ=skipped
 if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
   RUN_OUT=$(fm_nm_run_checked "$WT" "$NM_TIMEOUT" axi status)
   RUN_RC=$?
-  # Discriminate on whether the CALL COMPLETED, not on whether it printed: an
-  # exit-0 silence is a real answer ("no run"), while a timeout that happens to
-  # be silent is not. Getting this backwards would report every quiet lane as
-  # unreadable and drown the honest signal in false ones.
-  if [ "$RUN_RC" -eq 124 ] || [ "$RUN_RC" -gt 128 ] ||
-     { [ "$RUN_RC" -ne 0 ] && [ -z "$RUN_OUT" ]; }; then
+  if nm_read_incomplete "$RUN_RC" "$RUN_OUT"; then
     RUN_READ=unreadable
   else
     RUN_READ=answered
@@ -505,7 +528,7 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
       # primary call means the CLI itself did not respond, so retrying it
       # immediately with a second bounded call would just double the wait
       # for no better answer.
-      COARSE_STATUS=$(nm_runs_status_for_branch "$CREW_BRANCH")
+      nm_runs_status_for_branch "$CREW_BRANCH"
       if [ -n "$COARSE_STATUS" ]; then
         HAVE_RUN=1
         RUN_SOURCE=coarse
@@ -532,6 +555,12 @@ if [ "$HAVE_RUN" = 1 ]; then
     # coarse-vs-full distinction, so a real gate is never silently missed.
     case "$COARSE_STATUS" in
       running)   RUN_STATE=working; RUN_DETAIL="validating (background run)" ;;
+      # fm_nm_status_is_active owns which words mean "the pipeline is still
+      # running this row", and it accepts `pending` too. Without an arm here a
+      # queued run - now attributed on branch alone - would fall to the `*` arm
+      # and report `unknown`, which downstream maps to the measured fact that
+      # the crew stopped.
+      pending)   RUN_STATE=working; RUN_DETAIL="validating (queued)" ;;
       completed) RUN_STATE="done";  RUN_DETAIL="run completed" ;;
       failed)    RUN_STATE=failed;  RUN_DETAIL="run failed" ;;
       cancelled) RUN_STATE=failed;  RUN_DETAIL="run cancelled" ;;
@@ -633,32 +662,43 @@ if [ "$HAVE_RUN" = 1 ]; then
 fi
 
 # --- fallback: no run attributed to this crew ------------------------------
-# Everything below is reached in two very different situations, and only one of
-# them may spend an ABSENCE of evidence as a verdict about the crew:
-#   - RUN_READ=answered/skipped: it is MEASURED that no run owns this crew, so a
-#     dead endpoint or a missing target does mean the crew is gone.
-#   - RUN_READ=unreadable: nobody found out whether a run owns this crew. This
-#     script deliberately treats an attributed run as authoritative even when the
-#     pane has closed (the run-step path above never consults the pane), so a
-#     dead endpoint cannot establish a stop while that question is unanswered.
-# Only a POSITIVE, direct measurement of the crew - an exact busy verdict - may
-# still answer in the second case. Every negative one is suppressed so it cannot
-# pre-empt the `unreadable` emit below into `unknown - source: none - backend
-# target gone`, which is byte-identical to a measured stop and is exactly the
-# input stuck-crewmate-recovery would turn into a relaunch.
-#
 # The run-step path above already handled any crew with a run, regardless of pane
 # liveness, so a finished-but-pane-closed crew never reaches here. Down here there
 # is no run to consult, so a dead/unreadable target means the crew is gone: report
 # unknown rather than trusting a possibly-stale status log as the current state.
-if [ "$RUN_READ" != unreadable ]; then
-  [ -n "$BACKEND_TARGET" ] || emit unknown none "no backend target recorded"
-  # A worker placed on another host has no locally observable endpoint, so the
-  # liveness gate below would report every healthy one gone. Its state comes from
-  # the status log the remote worker keeps writing here.
-  if ! fm_backend_is_remote_placement "$META"; then
-    pane_readable "$BACKEND_TARGET" || emit unknown none "backend target gone: $BACKEND_TARGET"
-  fi
+#
+# The endpoint is probed FIRST, and its verdict gates the busy read below, in
+# BOTH the measured and the unmeasured case. The gate itself is never skipped:
+# crew_busy_verdict's primary source is the persisted state/<id>.busy-state
+# record, which is validated by generation match with no time expiry, so a crew
+# killed mid-turn leaves `state=busy` on disk indefinitely. Reading that record
+# without first confirming the pane still exists would report a DEAD crew as a
+# measured `working - source: pane` - inventing a measurement, which is worse
+# than the collapse this whole distinction exists to prevent (measured live
+# 2026-08-13: two crews whose agent process had exited, whose correct wedge
+# alarms were then absorbed by hand as false ones).
+ENDPOINT_GONE=""
+if [ -z "$BACKEND_TARGET" ]; then
+  ENDPOINT_GONE="no backend target recorded"
+# A worker placed on another host has no locally observable endpoint, so the
+# liveness gate would report every healthy one gone. Its state comes from the
+# status log the remote worker keeps writing here.
+elif ! fm_backend_is_remote_placement "$META" && ! pane_readable "$BACKEND_TARGET"; then
+  ENDPOINT_GONE="backend target gone: $BACKEND_TARGET"
+fi
+
+# What a gone endpoint PROVES depends on whether the run question was answered:
+#   - RUN_READ=answered/skipped: it is MEASURED that no run owns this crew, so a
+#     dead endpoint does mean the crew is gone.
+#   - RUN_READ=unreadable: nobody found out whether a run owns this crew, and
+#     this script deliberately treats an attributed run as authoritative even
+#     when the pane has closed, so a dead endpoint cannot establish a stop while
+#     that question is unanswered. Route it to the `unreadable` emit below
+#     instead, so it can never pre-empt it into `unknown - source: none -
+#     backend target gone` - byte-identical to a measured stop, and exactly the
+#     input stuck-crewmate-recovery would turn into a relaunch.
+if [ -n "$ENDPOINT_GONE" ] && [ "$RUN_READ" != unreadable ]; then
+  emit unknown none "$ENDPOINT_GONE"
 fi
 
 # Secondmates idle on their own watcher (idle pane = healthy), so the busy
@@ -666,7 +706,7 @@ fi
 # Only an exact busy verdict reports working here, and only an exact idle
 # verdict permits the status-log fallback below. Missing, malformed, stale, or
 # unverified semantic state remains unknown.
-if [ "$KIND" != secondmate ]; then
+if [ "$KIND" != secondmate ] && [ -z "$ENDPOINT_GONE" ]; then
   BUSY_VERDICT=$(crew_busy_verdict "$BACKEND_TARGET")
   case "${BUSY_VERDICT%% *}" in
     busy) emit working pane "harness busy (${BUSY_VERDICT#* })" ;;

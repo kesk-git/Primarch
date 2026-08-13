@@ -191,6 +191,60 @@ test_stale_diagnostic_wedge_survives_busy_housekeeping() {
   pass "enriched stale wedges bypass status absorption without disturbing busy workers"
 }
 
+# The wake reason is an INTER-PROCESS CONTRACT between bin/fm-watch.sh's wedge
+# timer and this daemon, and the daemon must key on the escalation marker the
+# timer stamps into it, never on the verdict prose that happens to precede it.
+# The timer emits a different phrase when the crew's state could not be read at
+# all, and while the daemon matched prose that one wake - the one meaning
+# "nobody could measure this crew" - fell through to classify_stale and was
+# self-handled on a `working:` status line. Both shapes are pinned here so a
+# future reword of either cannot silently re-absorb an escalation.
+test_wedge_escalation_marker_escalates_for_every_verdict_shape() {
+  local case_name dir state key task win reason
+  for case_name in possible-wedge unreadable unreadable-deep; do
+    dir=$(make_supercase "wedge-marker-$case_name")
+    state="$dir/state"
+    task="marker-$case_name"
+    win="sess:fm-$task"
+    case "$case_name" in
+      possible-wedge)
+        reason="stale: $win (idle 500s, possible wedge, escalation 1)" ;;
+      unreadable)
+        reason="stale: $win (idle 500s, current state unreadable - could not confirm whether this crew is working, escalation 1)" ;;
+      unreadable-deep)
+        reason="stale: $win (idle 500s, current state unreadable - could not confirm whether this crew is working, escalation 3, demand-deep-inspection: this pane's state has been unreadable for 3 escalation windows in a row - find out why the run source is not answering before judging the crew)" ;;
+    esac
+    fm_write_meta "$state/$task.meta" "window=$win" "backend=tmux"
+    # `working:` is precisely what classify_stale self-handles as transient, so
+    # only the marker override can produce an escalation here.
+    printf 'working: building\n' > "$state/$task.status"
+    key=$(printf '%s' "$task" | tr ':/.' '___')
+    echo $(( $(date +%s) - 500 )) > "$state/.subsuper-stale-$key"
+    (
+      LOG="$dir/daemon.log" FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state"
+    )
+    [ -s "$state/.subsuper-escalations" ] \
+      || fail "$case_name wedge escalation was self-handled instead of escalated"
+    grep -F "${reason#stale: }" "$state/.subsuper-escalations" >/dev/null \
+      || fail "$case_name wedge escalation lost its detail"
+  done
+
+  # A stale reason with no escalation marker keeps the ordinary self-handling,
+  # so the override stays narrow rather than escalating every stale wake.
+  dir=$(make_supercase wedge-marker-plain)
+  state="$dir/state"
+  task="marker-plain"
+  win="sess:fm-$task"
+  fm_write_meta "$state/$task.meta" "window=$win" "backend=tmux"
+  printf 'working: building\n' > "$state/$task.status"
+  (
+    LOG="$dir/daemon.log" FM_STATE_OVERRIDE="$state" handle_wake "stale: $win" "$state"
+  )
+  [ ! -s "$state/.subsuper-escalations" ] \
+    || fail "a plain stale wake with no escalation marker was force-escalated"
+  pass "every wedge-escalation reason shape escalates on its marker, and plain stale still self-handles"
+}
+
 test_stale_terminal_escalates() {
   local dir state out
   dir=$(make_supercase stale-terminal)
@@ -1841,6 +1895,7 @@ test_classify_terminal_signal_escalates
 test_classify_check_and_unknown_escalate
 test_stale_transient_self_records_marker
 test_stale_diagnostic_wedge_survives_busy_housekeeping
+test_wedge_escalation_marker_escalates_for_every_verdict_shape
 test_stale_terminal_escalates
 test_stale_paused_classifies_pause
 test_handle_wake_paused_records_pause_marker
