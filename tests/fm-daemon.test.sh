@@ -199,6 +199,68 @@ test_stale_diagnostic_wedge_survives_busy_housekeeping() {
 # "nobody could measure this crew" - fell through to classify_stale and was
 # self-handled on a `working:` status line. Both shapes are pinned here so a
 # future reword of either cannot silently re-absorb an escalation.
+# Away mode must not re-raise the false wedge alarm the always-on watcher stopped
+# raising. The watcher's AFK one-shot branch enqueues a bare `stale: <window>`,
+# which classify_stale self-handles into a stale marker; housekeeping then ages
+# that marker and, before this fix, alarmed on any idle pane - including the
+# healthy validating crew whose pipeline-owned run is still going. The marker is
+# keyed by task rather than pane hash, so a slowly-redrawing pane re-enters this
+# path repeatedly; both halves below drive the REAL reported path (handle_wake,
+# then housekeeping) rather than calling the gate directly.
+test_afk_housekeeping_absorbs_a_live_run_and_still_alarms_a_dead_one() {
+  local dir state fakebin key task win pane round
+  dir=$(make_supercase afk-housekeeping-live-run)
+  state="$dir/state"; fakebin="$dir/fakebin"; pane="$dir/pane.txt"
+  task=live-run; win="sess:fm-$task"
+  make_fake_crew_state "$fakebin" >/dev/null
+  fm_write_meta "$state/$task.meta" "window=$win" "backend=tmux"
+  printf 'working: validating\n' > "$state/$task.status"
+  key=$(printf '%s' "$task" | tr ':/.' '___')
+
+  # HALF 1: the pipeline still owns a live run on an idle pane. No alarm, across
+  # repeated cycles whose pane content (and therefore the watcher's hash) changes.
+  export FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh"
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  round=1
+  while [ "$round" -le 3 ]; do
+    printf 'no-mistakes axi run: validating, redraw %s\n' "$round" > "$pane"
+    (
+      LOG="$dir/daemon.log" FM_STATE_OVERRIDE="$state" handle_wake "stale: $win" "$state"
+    )
+    [ -e "$state/.subsuper-stale-$key" ] \
+      || { unset FM_FAKE_CREW_STATE FM_CREW_STATE_BIN; fail "round $round: the transient-stale marker was not recorded"; }
+    echo $(( $(date +%s) - 500 )) > "$state/.subsuper-stale-$key"
+    (
+      PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+        FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+        FM_STATE_OVERRIDE="$state" FM_ESCALATE_BATCH_SECS=999999 housekeeping "$state"
+    )
+    [ ! -s "$state/.subsuper-escalations" ] \
+      || { unset FM_FAKE_CREW_STATE FM_CREW_STATE_BIN
+           fail "round $round: away mode wedge-alarmed a crew whose pipeline-owned run is live: $(cat "$state/.subsuper-escalations")"; }
+    [ -e "$state/.subsuper-stale-$key" ] \
+      || { unset FM_FAKE_CREW_STATE FM_CREW_STATE_BIN; fail "round $round: the absorb dropped the marker, so a later wedge would go untracked"; }
+    round=$((round + 1))
+  done
+
+  # HALF 2: same pane, same marker, but the run has STOPPED - the crew is
+  # genuinely wedged or dead. The guard must still fire, or it is not a guard.
+  FM_FAKE_CREW_STATE='state: unknown · source: none · no live validation run for this branch, and no other current-state source available'
+  echo $(( $(date +%s) - 500 )) > "$state/.subsuper-stale-$key"
+  (
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+      FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+      FM_STATE_OVERRIDE="$state" FM_ESCALATE_BATCH_SECS=999999 housekeeping "$state"
+  )
+  grep -F "possible wedge" "$state/.subsuper-escalations" >/dev/null 2>&1 \
+    || { unset FM_FAKE_CREW_STATE FM_CREW_STATE_BIN
+         fail "a genuinely stopped crew was absorbed by the new away-mode gate - the guard can never fire"; }
+  grep -F "$win" "$state/.subsuper-escalations" >/dev/null \
+    || { unset FM_FAKE_CREW_STATE FM_CREW_STATE_BIN; fail "the away-mode wedge alarm lost its window"; }
+  unset FM_FAKE_CREW_STATE FM_CREW_STATE_BIN
+  pass "away-mode housekeeping absorbs an idle pane under a live run, and still alarms once that run stops"
+}
+
 test_wedge_escalation_marker_escalates_for_every_verdict_shape() {
   local case_name dir state key task win reason
   for case_name in possible-wedge unreadable unreadable-deep; do
@@ -1895,6 +1957,7 @@ test_classify_terminal_signal_escalates
 test_classify_check_and_unknown_escalate
 test_stale_transient_self_records_marker
 test_stale_diagnostic_wedge_survives_busy_housekeeping
+test_afk_housekeeping_absorbs_a_live_run_and_still_alarms_a_dead_one
 test_wedge_escalation_marker_escalates_for_every_verdict_shape
 test_stale_terminal_escalates
 test_stale_paused_classifies_pause

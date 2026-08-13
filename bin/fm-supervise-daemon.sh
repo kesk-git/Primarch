@@ -41,11 +41,15 @@
 #     drain and acknowledges it only after routing completes.
 #   - Fail-safe-to-escalate: any wake the classifier cannot confidently mark
 #     routine is escalated.
-#   - Bounded wedge latency: a stale pane without a declared external wait is
+#   - Bounded wedge latency: a stale pane without a declared external wait, and
+#     without a live pipeline-owned run, is
 #     escalated only after it has been idle for STALE_ESCALATE_SECS
 #     (configurable), rechecked once. A wedged crewmate is therefore detected
 #     within STALE_ESCALATE_SECS + a tick, never lost. A declared pause instead
-#     gets its own longer PAUSE_RESURFACE_SECS recheck, never a wedge escalation.
+#     gets its own longer PAUSE_RESURFACE_SECS recheck, never a wedge escalation,
+#     and an idle pane under a run no-mistakes still owns is absorbed on the same
+#     shared predicate the always-on watcher uses, so away mode cannot re-raise
+#     the false alarm the watcher stopped raising.
 #     Crewmates are autonomous, so a delayed stale response does not stall a
 #     healthy crewmate's own progress.
 #     Buffered escalation delivery also has a max-defer alarm: if a digest stays
@@ -88,7 +92,8 @@
 #                                   captain-relevant escalation for matching
 #                                   kinds.
 #          FM_STALE_ESCALATE_SECS   idle seconds before a stale pane escalates
-#                                   as a possible wedge (default 240)
+#                                   as a possible wedge, unless a live
+#                                   pipeline-owned run absorbs it (default 240)
 #          FM_PAUSE_RESURFACE_SECS  idle seconds before a declared external wait
 #                                   re-surfaces as a recheck (default 3600)
 #          FM_ESCALATE_BATCH_SECS   buffer window for batched escalation
@@ -952,7 +957,9 @@ _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first ar
 #     attempt one normal delivery; if it cannot confirm, raise the wedge alarm.
 #     Never silently defer forever.
 #  2) stale recheck: for each pending stale marker past STALE_ESCALATE_SECS,
-#     re-peek the pane; still idle -> escalate (wedge); resumed -> clear marker.
+#     re-peek the pane; resumed -> clear marker; still idle -> escalate (wedge),
+#     UNLESS the shared absorb owner reports a live pipeline-owned run, in which
+#     case the idle pane is that run's normal shape and the marker is reset.
 #  2b) pause re-surface: for each declared-pause marker past PAUSE_RESURFACE_SECS,
 #     re-peek; busy/gone -> clear; still idle + still paused -> escalate a recheck
 #     digest and reset the window (repeating bounded re-surface, never a wedge).
@@ -1016,8 +1023,23 @@ housekeeping() {  # <state>
     case "$?" in
       0) rm -f "$marker" ;;
       2) rm -f "$marker" ;;
-      *) escalate_add "$state" "stale persisted ${age}s (possible wedge): $win"
-         stale_marker_remove "$win" "$state" ;;
+      # Reached only when the pane is IDLE, which is the normal shape of a crew
+      # whose pipeline-owned run is still going: no-mistakes owns it for the
+      # run's duration. The watcher exempts exactly this case at its own wedge
+      # timer, and away mode must not re-raise the alarm the watcher just
+      # stopped raising, so the SAME shared owner decides here. `idle` is a
+      # fact this arm already established rather than an assumption, so a busy
+      # pane can never reach the absorb. Resetting the marker instead of
+      # dropping it keeps the pane tracked, so the window after the run stops
+      # escalates promptly - and the marker is keyed by task, not pane hash, so
+      # a slowly-redrawing pane reuses this one marker instead of re-alarming.
+      *) if crew_run_is_active "$(crew_absorb_verdict "$task")" idle; then
+           _now > "$marker"
+           log "absorb stale persistence (pipeline-owned run active, not a wedge): $win"
+         else
+           escalate_add "$state" "stale persisted ${age}s (possible wedge): $win"
+           stale_marker_remove "$win" "$state"
+         fi ;;
     esac
   done
 

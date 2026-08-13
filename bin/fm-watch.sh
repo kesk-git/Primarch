@@ -145,7 +145,10 @@ SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trai
 # is what wakes the LLM through the background-task completion. The same classifier
 # (fm-classify-lib.sh) backs the away-mode daemon; while state/.afk exists the
 # daemon owns triage, so this watcher reverts to one-shot (enqueue + exit on every
-# wake) and never double-triages - and never runs the costly provably-working read.
+# wake) and never double-triages. That AFK one-shot path itself never runs the
+# costly provably-working read, but the busy-turn routes sit OUTSIDE it, so a
+# busy pane past BUSY_TURN_MAX_SECS still reaches wedge_timer_check under AFK and
+# pays one bounded crew-state read per escalation window per pane.
 STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before an absorbed stale escalates as a possible wedge, unless the re-read at that moment shows a pipeline-owned run on an idle pane
 # A busy pane is unconditional proof of liveness with no built-in duration bound,
 # so a hung foreground call can remain hidden even while its rendered busy

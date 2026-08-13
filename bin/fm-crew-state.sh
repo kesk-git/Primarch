@@ -376,11 +376,14 @@ nm_ci_checks_state() {
 # "<status> <branch> <short-sha> <date> [<pr-url>]" separated by runs of
 # spaces (verified: no quoting, so splitting on the first two whitespace runs
 # is exact) - but branch + coarse status is exactly what this predicate needs:
-# is a run for THIS branch active right now. Echoes the first (most recent)
-# matching row's status word (running/completed/cancelled/failed), or empty
-# when the branch has no run within FM_CREW_STATE_RUNS_LIMIT rows.
+# is a run for THIS branch active right now. Prints NOTHING: it reports through
+# the COARSE_STATUS out-parameter, setting it to the first (most recent) matching
+# row's status word (pending/running/completed/cancelled/failed), or leaving it
+# empty when the branch has no run within FM_CREW_STATE_RUNS_LIMIT rows.
 #
-# Sets COARSE_STATUS rather than printing it, so a call that never completed can
+# Reporting through an out-parameter rather than printing is what lets a call
+# that never completed also set RUN_READ - a command substitution would trap that
+# in a subshell and
 # also set RUN_READ - a command substitution would trap that in a subshell and
 # leave an unanswered listing byte-indistinguishable from "this branch has no
 # rows", which is the same collapse RUN_READ exists to prevent on the primary
