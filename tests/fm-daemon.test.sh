@@ -208,12 +208,19 @@ test_stale_diagnostic_wedge_survives_busy_housekeeping() {
 # path repeatedly; both halves below drive the REAL reported path (handle_wake,
 # then housekeeping) rather than calling the gate directly.
 test_afk_housekeeping_absorbs_a_live_run_and_still_alarms_a_dead_one() {
-  local dir state fakebin key task win pane round
+  local dir state fakebin key task win pane round gen
   dir=$(make_supercase afk-housekeeping-live-run)
   state="$dir/state"; fakebin="$dir/fakebin"; pane="$dir/pane.txt"
   task=live-run; win="sess:fm-$task"
   make_fake_crew_state "$fakebin" >/dev/null
-  fm_write_meta "$state/$task.meta" "window=$win" "backend=tmux"
+  # harness=pi with an armed IDLE record, so fm_busy_classify returns an exact
+  # `idle` verdict. Without a record it would return `unknown missing`, which is
+  # a DIFFERENT fact - see the unproven control below - and this half would then
+  # prove nothing about the idle path it claims to cover.
+  fm_write_meta "$state/$task.meta" "window=$win" "backend=tmux" "harness=pi"
+  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" "$task")
+  "$ROOT/bin/fm-busy-event.sh" apply "$state" "$task" idle --gen "$gen" \
+    --source pi-ext --event agent-idle
   printf 'working: validating\n' > "$state/$task.status"
   key=$(printf '%s' "$task" | tr ':/.' '___')
 
@@ -259,6 +266,44 @@ test_afk_housekeeping_absorbs_a_live_run_and_still_alarms_a_dead_one() {
     || { unset FM_FAKE_CREW_STATE FM_CREW_STATE_BIN; fail "the away-mode wedge alarm lost its window"; }
   unset FM_FAKE_CREW_STATE FM_CREW_STATE_BIN
   pass "away-mode housekeeping absorbs an idle pane under a live run, and still alarms once that run stops"
+}
+
+# The CONTROL that pins the two facts apart. stale_window_is_busy's "not busy"
+# branch covers a measured idle AND a pane nobody could measure; only the first
+# is evidence. A crew whose agent process exited classifies unknown/dead, never
+# idle, so absorbing on the merged branch would silence exactly that crew while
+# its pipeline run stays alive - the twice-reproduced 2026-08-13 failure. Same
+# live run as HALF 1 above, so the pane token is the only thing deciding.
+test_afk_housekeeping_still_alarms_an_unproven_pane_under_a_live_run() {
+  local dir state fakebin key task win pane
+  dir=$(make_supercase afk-housekeeping-unproven-pane)
+  state="$dir/state"; fakebin="$dir/fakebin"; pane="$dir/pane.txt"
+  task=unproven-pane; win="sess:fm-$task"
+  make_fake_crew_state "$fakebin" >/dev/null
+  # harness=pi with NO busy record: fm_busy_classify reports `unknown missing`.
+  fm_write_meta "$state/$task.meta" "window=$win" "backend=tmux" "harness=pi"
+  printf 'working: validating\n' > "$state/$task.status"
+  printf 'no-mistakes axi run: validating\n' > "$pane"
+  key=$(printf '%s' "$task" | tr ':/.' '___')
+
+  export FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh"
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  (
+    LOG="$dir/daemon.log" FM_STATE_OVERRIDE="$state" handle_wake "stale: $win" "$state"
+  )
+  [ -e "$state/.subsuper-stale-$key" ] \
+    || { unset FM_FAKE_CREW_STATE FM_CREW_STATE_BIN; fail "the transient-stale marker was not recorded"; }
+  echo $(( $(date +%s) - 500 )) > "$state/.subsuper-stale-$key"
+  (
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+      FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+      FM_STATE_OVERRIDE="$state" FM_ESCALATE_BATCH_SECS=999999 housekeeping "$state"
+  )
+  grep -F "possible wedge" "$state/.subsuper-escalations" >/dev/null 2>&1 \
+    || { unset FM_FAKE_CREW_STATE FM_CREW_STATE_BIN
+         fail "a pane whose busy state could not be measured was absorbed as a measured idle"; }
+  unset FM_FAKE_CREW_STATE FM_CREW_STATE_BIN
+  pass "away-mode housekeeping still alarms an unproven pane under a live run - only a measured idle absorbs"
 }
 
 test_wedge_escalation_marker_escalates_for_every_verdict_shape() {
@@ -1958,6 +2003,7 @@ test_classify_check_and_unknown_escalate
 test_stale_transient_self_records_marker
 test_stale_diagnostic_wedge_survives_busy_housekeeping
 test_afk_housekeeping_absorbs_a_live_run_and_still_alarms_a_dead_one
+test_afk_housekeeping_still_alarms_an_unproven_pane_under_a_live_run
 test_wedge_escalation_marker_escalates_for_every_verdict_shape
 test_stale_terminal_escalates
 test_stale_paused_classifies_pause

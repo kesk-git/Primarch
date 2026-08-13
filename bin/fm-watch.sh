@@ -201,6 +201,16 @@ hash_pane() {
 # <tail40> is the same bounded capture already read for hashing and is
 # consumed only by the Grok-scoped fallback inside the contract.
 window_is_busy() {  # <window> <tail40>
+  [ "$(window_pane_token "$@")" = busy ]
+}
+
+# The same one classification, rendered as fm-classify-lib.sh's three-way pane
+# token instead of collapsed to a boolean. window_is_busy's false branch merges
+# a measured idle with a pane nobody could measure, which is right for "is this
+# exempt from staleness?" but not for any caller that must not spend an unproven
+# pane as a measured one - see crew_run_is_active. ONE computation owner, so the
+# boolean and the token can never disagree about the same poll.
+window_pane_token() {  # <window> <tail40>
   local w=$1 tail40=$2 task meta verdict
   task=$(window_to_task "$w" "$STATE")
   meta="$STATE/$task.meta"
@@ -210,7 +220,7 @@ window_is_busy() {  # <window> <tail40>
     verdict=$(fm_busy_classify "$(window_backend "$w")" "$w" "$(window_harness "$w")" \
       "${task:-unknown}" "$STATE" "$tail40")
   fi
-  [ "${verdict%% *}" = busy ]
+  crew_pane_token "$verdict"
 }
 
 window_kind() {
@@ -288,10 +298,12 @@ FM_WEDGE_DEMAND_INSPECT_COUNT=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
 # both places a hash can be absorbed this way: the plain non-terminal path,
 # and the stale_is_terminal-overridden path (a captain-relevant status-log
 # line that an active run/busy pane outranked).
-# <pane> is the caller's own busy observation for this same pane in this same
-# poll (the literal `busy`, or anything else when the pane is not busy). It is
+# <pane> is window_pane_token's rendering of the caller's own observation of this
+# same pane in this same poll - busy, idle, or unproven, never a boolean. It is
 # REQUIRED, not inferred: the crew-state line cannot supply it (see
 # crew_run_is_active), and every route into this timer already computed it.
+# Only a measured `idle` can absorb, so a pane whose state could not be
+# classified escalates rather than being spent as a quiet healthy one.
 wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <pane>
   local win=$1 since_file=$2 label=$3 escalation_file=$4 pane=$5 since age n reason
   local task verdict verdict_note deep_note
@@ -1086,8 +1098,12 @@ EOF
     # the last 6 non-blank lines only (the TUI footer area, where every verified
     # harness renders its busy indicator) so busy-looking strings in displayed
     # content cannot suppress stale detection. Read once per window per poll and
-    # reused below so a busy verdict is consistent within one cycle.
-    if window_is_busy "$w" "$tail40"; then busy_now=0; else busy_now=1; fi
+    # reused below so a busy verdict is consistent within one cycle. The token
+    # keeps the two facts the boolean merges - a measured idle and a pane nobody
+    # could measure - separable for the wedge absorb, which must not spend the
+    # second as the first.
+    pane_token=$(window_pane_token "$w" "$tail40")
+    if [ "$pane_token" = busy ]; then busy_now=0; else busy_now=1; fi
     if [ "$h" = "$prev" ]; then
       n=$(( $(cat "$cf" 2>/dev/null || echo 0) + 1 ))
       echo "$n" > "$cf"
@@ -1138,7 +1154,7 @@ EOF
             # wedge timer is running for it) - keep treating it that way
             # without re-reading the crew state every poll, and without
             # letting the still-captain-relevant log line re-surface it.
-            wedge_timer_check "$w" "$ssf" "stale (overridden terminal status)" "$ewf" idle
+            wedge_timer_check "$w" "$ssf" "stale (overridden terminal status)" "$ewf" "$pane_token"
           fi
           # else: already surfaced as genuinely terminal on a prior poll of
           # this same hash - nothing left to do (matches the original,
@@ -1181,12 +1197,12 @@ EOF
                 paused)  handle_paused_stale "$w" "$task" "$h" ;;
                 working) clear_pause_state "$w"
                          printf '%s' "$h" > "$sf"
-                         wedge_timer_check "$w" "$ssf" "non-terminal stale (provably working after a declared pause)" "$ewf" idle
+                         wedge_timer_check "$w" "$ssf" "non-terminal stale (provably working after a declared pause)" "$ewf" "$pane_token"
                          triage_log "absorbed non-terminal stale (provably working): $w" ;;
                 *)       handle_paused_stale "$w" "$task" "$h" ;;
               esac
             else
-              wedge_timer_check "$w" "$ssf" "non-terminal stale" "$ewf" idle
+              wedge_timer_check "$w" "$ssf" "non-terminal stale" "$ewf" "$pane_token"
             fi
           fi
         fi
@@ -1195,7 +1211,7 @@ EOF
         # unless a genuinely busy pane has gone too long with no completed turn -
         # then route it through the same wedge timer instead of erasing it.
         if [ "$busy_now" -eq 0 ] && busy_turn_over_age "$task"; then
-          wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf" busy
+          wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf" "$pane_token"
         else
           rm -f "$ssf" "$ewf"
         fi
@@ -1207,7 +1223,7 @@ EOF
       printf '%s' "$h" > "$hf"
       echo 0 > "$cf"
       if [ "$busy_now" -eq 0 ] && busy_turn_over_age "$task"; then
-        wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf" busy
+        wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf" "$pane_token"
       else
         rm -f "$ssf" "$ewf"
       fi

@@ -667,17 +667,43 @@ crew_absorb_verdict() {  # <id>
 # that bound, the only one that catches a hung foreground tool call.
 #
 # Both arguments are required because NEITHER answers the question alone.
-# <verdict> comes from one crew_absorb_verdict read; <pane> is the caller's OWN
-# observation of that same pane in that same poll (the literal `busy`, or
-# anything else for a pane that is not busy). fm-crew-state.sh decides the
-# run-step verdict BEFORE it ever reads the pane, so a busy pane whose branch has
-# a live run reports `working - run-step` byte-identically to an idle one:
-# deciding on the source token alone would silence exactly the wedged pane this
-# guard exists to catch. The asymmetry is the point - an idle pane under a live
-# run is that run's normal shape, a busy pane past its turn bound never is.
+# <verdict> comes from one crew_absorb_verdict read; <pane> is crew_pane_token's
+# rendering of the caller's OWN observation of that same pane in that same poll.
+# fm-crew-state.sh decides the run-step verdict BEFORE it ever reads the pane, so
+# a busy pane whose branch has a live run reports `working - run-step`
+# byte-identically to an idle one: deciding on the source token alone would
+# silence exactly the wedged pane this guard exists to catch. The asymmetry is
+# the point - an idle pane under a live run is that run's normal shape, a busy
+# pane past its turn bound never is.
+#
+# <pane> must POSITIVELY be `idle`. Absorbing on "anything that is not busy"
+# reads an UNPROVEN pane as a measured idle - and a pane whose agent process has
+# exited classifies unknown/dead, not idle, so that spelling silences exactly the
+# dead crew this guard must still catch (measured live 2026-08-13 on two crews).
+# Requiring the positive token also means a caller that passes a stale, empty, or
+# misspelled value fails SAFE into escalating instead of silently absorbing.
 crew_run_is_active() {  # <verdict> <pane>
-  if [ "$2" = busy ]; then return 1; fi
+  [ "$2" = idle ] || return 1
   [ "$1" = "working run-step" ]
+}
+
+# The pane half of that decision, rendered from a bin/fm-busy-lib.sh verdict
+# line ("<busy|idle|unknown|dead> <source>"). THREE outcomes, never two:
+#   busy     - PROVABLY working; the crew's own foreground work, still bounded by
+#              BUSY_TURN_MAX_SECS, so it must never be absorbed;
+#   idle     - an EXACT idle verdict, i.e. a measurement of a live-but-quiet pane;
+#   unproven - everything else (unknown, dead, malformed, stale, missing record).
+# `idle` and `unproven` are deliberately NOT one token. Collapsing them is the
+# same absence-reported-as-measurement defect the crew-state line exists to
+# prevent, and both producing arms in this repo (bin/fm-watch.sh's
+# window_is_busy and bin/fm-supervise-daemon.sh's stale_window_is_busy) are
+# boolean "provably busy?" tests whose false branch covers both.
+crew_pane_token() {  # <busy-verdict>
+  case "${1%% *}" in
+    busy) printf 'busy' ;;
+    idle) printf 'idle' ;;
+    *)    printf 'unproven' ;;
+  esac
 }
 
 # 0 if crew <id> shows POSITIVE evidence it is still working (crew_absorb_class

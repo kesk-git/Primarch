@@ -384,7 +384,6 @@ nm_ci_checks_state() {
 # Reporting through an out-parameter rather than printing is what lets a call
 # that never completed also set RUN_READ - a command substitution would trap that
 # in a subshell and
-# also set RUN_READ - a command substitution would trap that in a subshell and
 # leave an unanswered listing byte-indistinguishable from "this branch has no
 # rows", which is the same collapse RUN_READ exists to prevent on the primary
 # call. RUN_READ stays the ONE owner of "did the run source answer".
@@ -502,11 +501,28 @@ COARSE_STATUS=""
 # measurement, and only the first may be spent as evidence about the crew.
 #   skipped    - no run source applies (scout/secondmate, detached HEAD, no CLI)
 #   answered   - the CLI ran to completion; whatever it said, including an error
-#                such as `error: repo not initialized` (verified: written to
-#                stdout, exit 1) or a silent "no runs", is a MEASUREMENT
+#                such as `error: repo not initialized` or `error: not in a git
+#                repository` (both verified on v1.46.0: written to stdout, exit
+#                1) or a silent "no runs", is a MEASUREMENT
 #   unreadable - the bounded call never completed: it timed out (124), was killed
 #                by a signal (>128), or there was no timeout mechanism to bound
 #                it at all, in which case nothing ran and nothing was learned
+#
+# KNOWN IMPRECISION, measured rather than assumed. v1.46.0 routes its two error
+# classes differently: application errors go to STDOUT (the two above), while
+# USAGE errors - `unknown command "x" for "no-mistakes axi"`, `unknown flag:
+# --x` - go to stderr with EMPTY stdout and exit 1, so the third clause below
+# calls them `unreadable` even though the CLI answered. That direction is safe
+# (unreadable is never absorbed and always surfaces) and a broken invocation is
+# worth surfacing anyway.
+# Do NOT "fix" it by treating non-empty stderr as proof the call answered: this
+# CLI writes an unconditional version-upgrade notice to stderr at STARTUP, so
+# stderr is non-empty on every invocation - verified including rc=0 successes
+# and immediate dispatch failures. A process killed at the bound has therefore
+# already flushed it, so that rule would classify a genuine TIMEOUT as answered
+# - the dangerous direction, and precisely the collapse RUN_READ exists to
+# prevent. Discriminating on stderr would need the notice filtered by its
+# cosmetic text, which is not a contract worth binding to.
 RUN_READ=skipped
 # Scouts and secondmates never drive a no-mistakes validation of their own
 # worktree, so skip the lookup for them and read state from pane/log directly.

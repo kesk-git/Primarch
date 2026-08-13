@@ -121,6 +121,16 @@ record_pi_busy() {  # <state-dir> <id>
     --source pi-ext --event agent-start
 }
 
+# An EXACT idle verdict, which is a measurement of a live-but-quiet pane. A
+# fixture with no record at all classifies `unknown missing` instead, which the
+# wedge absorb deliberately refuses - so a test that means "idle" must say so.
+record_pi_idle() {  # <state-dir> <id>
+  local state=$1 id=$2 gen
+  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" "$id")
+  "$ROOT/bin/fm-busy-event.sh" apply "$state" "$id" idle --gen "$gen" \
+    --source pi-ext --event agent-idle
+}
+
 reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
 
 # --- pure classifier predicates (fm-classify-lib.sh) ------------------------
@@ -685,7 +695,10 @@ test_active_run_not_wedge_escalated_past_threshold() {
   out="$dir/watch.out"; capture_file="$dir/pane.txt"
   window="test:fm-validating"
   printf 'no-mistakes axi run: validating...' > "$capture_file"
-  printf 'window=%s\nkind=ship\n' "$window" > "$state/validating.meta"
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/validating.meta"
+  # A MEASURED idle pane, not merely one whose state nobody could read: the
+  # absorb refuses the latter, so the fixture has to state which one this is.
+  record_pi_idle "$state" validating
   printf 'working: handed to validation\n' > "$state/validating.status"
   sig=$(seen_sig "$state/validating.status"); printf '%s' "$sig" > "$state/.seen-validating_status"
   key=$(printf '%s' "$window" | tr ':/.' '___')
@@ -713,6 +726,45 @@ test_active_run_not_wedge_escalated_past_threshold() {
   reap "$pid"
   unset FM_FAKE_CREW_STATE
   pass "an idle pane is not wedge-escalated while its pipeline-owned run is active"
+}
+
+# The CONTROL for the absorb above, and the third outcome the boolean busy test
+# merges away. `not provably busy` covers a MEASURED idle and a pane nobody could
+# measure, and only the first is evidence. A crew whose agent process has exited
+# classifies unknown/dead, never idle - the twice-reproduced 2026-08-13 shape -
+# so spending an unproven pane as an idle one would silence exactly the dead crew
+# the guard exists to catch, while its pipeline run happily stays alive.
+test_unproven_pane_under_live_run_still_wedge_escalates() {
+  local dir state fakebin out capture_file window key pane_hash sig pid
+  dir=$(make_case unproven-pane-live-run); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-unproven"
+  printf 'no-mistakes axi run: validating...' > "$capture_file"
+  # harness=pi with NO busy record at all: fm_busy_classify reports
+  # `unknown missing`, which is neither busy nor a measured idle.
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/unproven.meta"
+  printf 'working: handed to validation\n' > "$state/unproven.status"
+  sig=$(seen_sig "$state/unproven.status"); printf '%s' "$sig" > "$state/.seen-unproven_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "no-mistakes axi run: validating...")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  echo $(( $(date +%s) - 5000 )) > "$state/.stale-since-$key"
+  # The run is genuinely live - the absorb's other half is satisfied, so only
+  # the pane token can decide this case.
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 \
+    || { reap "$pid"; unset FM_FAKE_CREW_STATE; fail "a pane whose busy state could not be measured was absorbed as a measured idle"; }
+  grep -F "possible wedge" "$out" >/dev/null \
+    || { unset FM_FAKE_CREW_STATE; fail "the unproven pane escalated without flagging a possible wedge"; }
+  unset FM_FAKE_CREW_STATE
+  pass "an unproven pane under a live run still escalates - only a measured idle absorbs"
 }
 
 # A merely BUSY pane must keep escalating here, or BUSY_TURN_MAX_SECS - the only
@@ -2262,6 +2314,7 @@ test_terminal_stale_surfaced
 test_stale_terminal_status_overridden_by_active_run
 test_nonterminal_stale_provably_working_absorbed_then_escalated
 test_active_run_not_wedge_escalated_past_threshold
+test_unproven_pane_under_live_run_still_wedge_escalates
 test_busy_pane_alone_still_wedge_escalates
 test_busy_pane_under_live_run_still_wedge_escalates
 test_busy_pane_unreadable_state_names_the_observed_pane

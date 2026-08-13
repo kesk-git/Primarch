@@ -626,14 +626,26 @@ task_window_harness() {  # <window> <state>
 # when the endpoint could not be read at all. Only an exact busy verdict is
 # working: unknown semantic state never becomes busy and never becomes a
 # silent idle, so a stale pane whose state cannot be proven surfaces.
-stale_window_is_busy() {  # <window> <state>
+#
+# The 1 branch deliberately covers BOTH an exact idle verdict and an unprovable
+# one, which is right for "should this surface?" but NOT enough for any caller
+# that needs to know a pane was measured idle. Such a caller reads
+# STALE_PANE_TOKEN, set on every path (including the unreadable-endpoint
+# return) to fm-classify-lib.sh's three-way busy/idle/unproven token, so the two
+# facts the boolean merges stay separable. Reported through an out-parameter for
+# the same reason nm_runs_status_for_branch does: a command substitution would
+# trap it in a subshell.
+STALE_PANE_TOKEN=unproven
+stale_window_is_busy() {  # <window> <state>  -> also sets STALE_PANE_TOKEN
   local win=$1 state=$2 backend harness label task tail40 verdict
+  STALE_PANE_TOKEN=unproven
   backend=$(task_window_backend "$win" "$state")
   harness=$(task_window_harness "$win" "$state")
   task=$(window_to_task "$win" "$state")
   label="fm-$task"
   tail40=$(fm_backend_capture "$backend" "$win" 40 "$label" 2>/dev/null) || return 2
   verdict=$(fm_busy_classify "$backend" "$win" "$harness" "$task" "$state" "$tail40")
+  STALE_PANE_TOKEN=$(crew_pane_token "$verdict")
   [ "${verdict%% *}" = busy ]
 }
 
@@ -1023,17 +1035,20 @@ housekeeping() {  # <state>
     case "$?" in
       0) rm -f "$marker" ;;
       2) rm -f "$marker" ;;
-      # Reached only when the pane is IDLE, which is the normal shape of a crew
-      # whose pipeline-owned run is still going: no-mistakes owns it for the
-      # run's duration. The watcher exempts exactly this case at its own wedge
-      # timer, and away mode must not re-raise the alarm the watcher just
-      # stopped raising, so the SAME shared owner decides here. `idle` is a
-      # fact this arm already established rather than an assumption, so a busy
-      # pane can never reach the absorb. Resetting the marker instead of
-      # dropping it keeps the pane tracked, so the window after the run stops
-      # escalates promptly - and the marker is keyed by task, not pane hash, so
-      # a slowly-redrawing pane reuses this one marker instead of re-alarming.
-      *) if crew_run_is_active "$(crew_absorb_verdict "$task")" idle; then
+      # Reached when the pane is NOT provably busy, which merges two different
+      # facts: a measured idle - the normal shape of a crew whose pipeline-owned
+      # run is still going, since no-mistakes owns it for the run's duration -
+      # and a pane nobody could measure. STALE_PANE_TOKEN keeps them apart and
+      # only the measured idle absorbs, because an agent process that has exited
+      # classifies unknown/dead rather than idle: spending that as an idle would
+      # silence the very crew away mode exists to catch. The watcher exempts the
+      # same measured-idle case at its own wedge timer, and away mode must not
+      # re-raise the alarm the watcher just stopped raising, so the SAME shared
+      # owner decides here. Resetting the marker instead of dropping it keeps the
+      # pane tracked, so the window after the run stops escalates promptly - and
+      # the marker is keyed by task, not pane hash, so a slowly-redrawing pane
+      # reuses this one marker instead of re-alarming.
+      *) if crew_run_is_active "$(crew_absorb_verdict "$task")" "$STALE_PANE_TOKEN"; then
            _now > "$marker"
            log "absorb stale persistence (pipeline-owned run active, not a wedge): $win"
          else
