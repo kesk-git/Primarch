@@ -612,8 +612,16 @@ signal_reason_is_actionable() {  # <file> ...
 #             (e.g. waiting on CI);
 #   paused  - the crew's authoritative current state is a declared external-wait
 #             pause (paused:), which is EXPECTED to idle;
+#   unreadable - the current state could not be determined at all (the run source
+#             did not answer, or the verdict itself was unusable). NOT a synonym
+#             for `none`: `none` is the measured fact that the crew is stopped or
+#             finished, while this is the ABSENCE of a measurement. Both surface,
+#             but only this one must never be reported as a fact about the crew,
+#             and neither may ever be absorbed.
 #   none    - neither, so the wake must surface (a stopped/finished/parked/failed/
-#             torn-down/unknown crew, or an unreadable verdict).
+#             torn-down/unknown crew).
+# Absorb decisions read this ONE function, so the working/paused/unreadable/none
+# distinction cannot be re-derived - or quietly re-collapsed - at a call site.
 # One fm-crew-state.sh read serves BOTH absorb reasons at once. Reading the state
 # authoritatively (not the status log) is what keeps run-step precedence: a crew
 # that appended paused: but then STARTED a run reports working, never paused.
@@ -622,16 +630,34 @@ signal_reason_is_actionable() {  # <file> ...
 # FM_CREW_STATE_BIN lets tests stub the verdict.
 crew_absorb_class() {  # <id>
   local id=$1 line state src
-  [ -n "$id" ] || { printf 'none'; return; }
+  [ -n "$id" ] || { printf 'unreadable'; return; }
   line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
-  case "$line" in state:*) ;; *) printf 'none'; return ;; esac
+  # An unparseable verdict is an absence of measurement, not a stopped crew.
+  case "$line" in state:*) ;; *) printf 'unreadable'; return ;; esac
   state=${line#state: }; state=${state%% *}
+  if [ "$state" = unreadable ]; then printf 'unreadable'; return; fi
   if [ "$state" = paused ]; then printf 'paused'; return; fi
   if [ "$state" = working ]; then
     src=${line#*source: }; src=${src%% *}
     case "$src" in run-step|pane) printf 'working'; return ;; esac
   fi
   printf 'none'
+}
+
+# 0 when crew <id> is working AND that evidence is a PIPELINE-OWNED RUN, not a
+# busy pane. The wedge guard needs this narrower question: an active run is
+# owned by no-mistakes and legitimately idles the pane for its whole duration,
+# whereas a busy pane is the crew's own foreground work and stays bounded by
+# BUSY_TURN_MAX_SECS - absorbing on a busy pane would defeat that bound.
+crew_run_is_active() {  # <id>
+  local line state src
+  [ -n "$1" ] || return 1
+  line=$("$FM_CREW_STATE_BIN" "$1" 2>/dev/null) || true
+  case "$line" in state:*) ;; *) return 1 ;; esac
+  state=${line#state: }; state=${state%% *}
+  [ "$state" = working ] || return 1
+  src=${line#*source: }; src=${src%% *}
+  [ "$src" = run-step ]
 }
 
 # 0 if crew <id> shows POSITIVE evidence it is still working (crew_absorb_class

@@ -293,10 +293,15 @@ test_status_is_paused_classifier() {
   pass "status_is_paused: only the leading paused verb matches, and paused is not captain-relevant"
 }
 
-# crew_absorb_class: the single fm-crew-state.sh read that returns BOTH absorb
-# reasons - working (active run/busy pane), paused (declared external wait), or none
-# (surface it) - so the watcher's stale path gets both for one bounded call.
+# crew_absorb_class: the single fm-crew-state.sh read that returns EVERY absorb
+# reason - working (active run/busy pane), paused (declared external wait),
+# unreadable (no measurement was possible), or none (measured as stopped) - so
+# the watcher's stale path gets them all for one bounded call.
 # crew_is_paused delegates to it exactly as crew_is_provably_working does.
+#
+# `unreadable` and `none` both surface, but they must stay DISTINGUISHABLE: one
+# says the crew is stopped, the other says nobody found out. Collapsing them is
+# what let a false alarm and a real one render identically.
 test_crew_absorb_class_classifier() {
   local dir fakebin
   dir=$(make_case absorb-class); fakebin="$dir/fakebin"
@@ -315,9 +320,28 @@ test_crew_absorb_class_classifier() {
   FM_FAKE_CREW_STATE='state: unknown · source: none · worktree gone'
   [ "$(crew_absorb_class a)" = none ] || fail "unknown crew classed absorbable"
   ! crew_is_paused a || fail "unknown crew classed paused"
-  [ "$(crew_absorb_class "")" = none ] || fail "empty id not classed none"
+  # An absence of measurement is never reported as a fact about the crew.
+  FM_FAKE_CREW_STATE='state: unreadable · source: run-source · validation state could not be read'
+  [ "$(crew_absorb_class a)" = unreadable ] || fail "unreadable verdict not classed unreadable"
+  ! crew_is_provably_working a || fail "an unreadable verdict was treated as provably working"
+  ! crew_is_paused a || fail "an unreadable verdict was treated as paused"
+  ! crew_run_is_active a || fail "an unreadable verdict was treated as an active run"
+  FM_FAKE_CREW_STATE='this is not a state line at all'
+  [ "$(crew_absorb_class a)" = unreadable ] || fail "an unparseable verdict was classed as a measured state"
+  [ "$(crew_absorb_class "")" = unreadable ] || fail "empty id (no measurement possible) not classed unreadable"
+
+  # crew_run_is_active is deliberately NARROWER than crew_is_provably_working:
+  # only a pipeline-owned run absorbs the wedge alarm, never a merely busy pane,
+  # or BUSY_TURN_MAX_SECS could never fire.
+  FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  crew_run_is_active a || fail "an active run-step was not recognized as a live run"
+  FM_FAKE_CREW_STATE='state: working · source: pane · harness busy'
+  crew_is_provably_working a || fail "a busy pane stopped being provably working"
+  ! crew_run_is_active a || fail "a busy pane was mistaken for a pipeline-owned run"
+  FM_FAKE_CREW_STATE='state: parked · source: run-step · parked at review'
+  ! crew_run_is_active a || fail "a parked run was treated as actively running"
   unset FM_FAKE_CREW_STATE
-  pass "crew_absorb_class: working/paused/none from one read; crew_is_paused and crew_is_provably_working agree"
+  pass "crew_absorb_class: working/paused/unreadable/none from one read, and crew_run_is_active narrows to a pipeline-owned run"
 }
 
 # signal_crew_provably_working: a no-verb "signal:" wake is benign ONLY when EVERY
@@ -513,8 +537,14 @@ test_stale_terminal_status_overridden_by_active_run() {
   reap "$pid"
   ack_stopped_cycle "$state" || fail "could not acknowledge the intentional phase-A watcher stop"
 
-  # Phase B: backdate the idle timer past the threshold; the run genuinely
-  # wedges and the next poll escalates exactly like the non-terminal case.
+  # Phase B: the run STOPS being live (it died without writing a status line),
+  # so the crew is genuinely wedged. Backdate the idle timer past the threshold
+  # and the next poll escalates exactly like the non-terminal case.
+  # The verdict has to change for this to be a wedge at all: while the pipeline
+  # still owns a live run, an idle pane is that run's normal shape, and the
+  # escalation-time re-read absorbs it (covered by
+  # test_active_run_not_wedge_escalated_past_threshold).
+  FM_FAKE_CREW_STATE='state: unknown · source: none · no live validation run for this branch, and no other current-state source available'
   echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
   : > "$out"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
@@ -566,8 +596,13 @@ test_nonterminal_stale_provably_working_absorbed_then_escalated() {
   reap "$pid"
   ack_stopped_cycle "$state" || fail "could not acknowledge the intentional phase-A watcher stop"
 
-  # Phase B: backdate the idle timer past the threshold; the next run escalates.
-  # (The subsequent-sight timer path does not re-read the crew state.)
+  # Phase B: the pipeline run ENDS while the pane stays static, so the crew is
+  # now genuinely stopped. Backdate the idle timer past the threshold and the
+  # next poll escalates. The escalation-time re-read is what distinguishes this
+  # from a run that is still going (see
+  # test_active_run_not_wedge_escalated_past_threshold): elapsed idle time alone
+  # is not evidence of a wedge.
+  FM_FAKE_CREW_STATE='state: unknown · source: none · no live validation run for this branch, and no other current-state source available'
   echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
   : > "$out"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
@@ -581,6 +616,162 @@ test_nonterminal_stale_provably_working_absorbed_then_escalated() {
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the wedge escalation failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "wedge escalation was not queued"
   pass "provably-working non-terminal stale is absorbed on first sight, then wedge-escalated past the threshold"
+}
+
+# --- an idle pane under an ACTIVE pipeline-owned run is not a wedge -----------
+# Measured cost of getting this wrong: seven false stale escalations in ONE run,
+# each costing a full supervisor turn to confirm nothing was wrong. The wedge
+# timer escalated on elapsed idle time alone and then reset itself, so a healthy
+# validating crew re-alarmed every STALE_ESCALATE_SECS for the whole run - and
+# the cost scaled with run length. An idle pane IS the normal shape of a crew
+# whose pipeline owns it.
+test_active_run_not_wedge_escalated_past_threshold() {
+  local dir state fakebin out capture_file window key pane_hash sig pid
+  dir=$(make_case active-run-no-wedge); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-validating"
+  printf 'no-mistakes axi run: validating...' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/validating.meta"
+  printf 'working: handed to validation\n' > "$state/validating.status"
+  sig=$(seen_sig "$state/validating.status"); printf '%s' "$sig" > "$state/.seen-validating_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "no-mistakes axi run: validating...")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  # Already classified and absorbed on an earlier poll, with the wedge timer
+  # backdated well past the threshold: this is exactly the poll that used to
+  # fire a false alarm.
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  echo $(( $(date +%s) - 5000 )) > "$state/.stale-since-$key"
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (fixing)'
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 40; then
+    reap "$pid"; unset FM_FAKE_CREW_STATE
+    fail "an idle pane under an active pipeline-owned run was wedge-escalated: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; unset FM_FAKE_CREW_STATE; fail "an active run printed a wedge wake reason"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; unset FM_FAKE_CREW_STATE; fail "an active run enqueued a wedge wake"; }
+  [ ! -s "$state/.wedge-escalations-$key" ] || { reap "$pid"; unset FM_FAKE_CREW_STATE; fail "an active run advanced the escalation counter"; }
+  reap "$pid"
+  unset FM_FAKE_CREW_STATE
+  pass "an idle pane is not wedge-escalated while its pipeline-owned run is active"
+}
+
+# A merely BUSY pane must keep escalating here, or BUSY_TURN_MAX_SECS - the only
+# bound on a hung foreground tool call - could never fire. This is the direction
+# that proves the absorb above is narrow rather than a blanket amnesty.
+test_busy_pane_alone_still_wedge_escalates() {
+  local dir state fakebin out capture_file window key pane_hash sig pid
+  dir=$(make_case busy-pane-still-wedges); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-busypane"
+  printf 'idle building output' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/busypane.meta"
+  printf 'working: still compiling\n' > "$state/busypane.status"
+  sig=$(seen_sig "$state/busypane.status"); printf '%s' "$sig" > "$state/.seen-busypane_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle building output")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  echo $(( $(date +%s) - 5000 )) > "$state/.stale-since-$key"
+  # Working, but the evidence is a busy pane - NOT a pipeline-owned run.
+  export FM_FAKE_CREW_STATE='state: working · source: pane · harness busy (claude)'
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || { reap "$pid"; unset FM_FAKE_CREW_STATE; fail "a busy pane with no pipeline run stopped escalating"; }
+  grep -F "possible wedge" "$out" >/dev/null || { unset FM_FAKE_CREW_STATE; fail "busy-pane escalation did not flag a possible wedge"; }
+  unset FM_FAKE_CREW_STATE
+  pass "a busy pane alone still wedge-escalates, so BUSY_TURN_MAX_SECS keeps its bound"
+}
+
+# --- a declared bounded external wait is never a possible wedge ---------------
+# The crew said why it is idle. Repeatedly re-asking "possible wedge?" is the
+# alarm that trains dismissal of the one that matters. This pins the standing
+# guarantee over an unchanged pane whose wedge timer is already past the
+# threshold - the exact poll shape that produced the false escalations.
+test_declared_pause_never_wedge_escalates() {
+  local dir state fakebin out capture_file statusf window key pane_hash sig pid round
+  dir=$(make_case declared-pause-no-wedge); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/waiting.status"
+  window="test:fm-waiting"
+  printf 'idle awaiting the validation run' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=claude\nbackend=tmux\n' "$window" > "$state/waiting.meta"
+  printf 'paused: waiting on the validation run\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-waiting_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle awaiting the validation run")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  # Already sighted and flagged paused, with the wedge timer left behind and
+  # already past the threshold.
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  : > "$state/.paused-$key"
+  date +%s > "$state/.paused-rechecked-$key"
+  date +%s > "$state/.paused-resurfaced-$key"
+  echo $(( $(date +%s) - 5000 )) > "$state/.stale-since-$key"
+  export FM_FAKE_CREW_STATE='state: paused · source: status-log · waiting on the validation run'
+
+  round=1
+  while [ "$round" -le 3 ]; do
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_FAKE_TMUX_CURRENT_COMMAND=claude \
+      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
+      FM_PAUSE_RESURFACE_SECS=99999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
+    pid=$!
+    if wait_live "$pid" 20; then reap "$pid"; else wait "$pid" 2>/dev/null || true; fi
+    round=$((round + 1))
+  done
+  if grep -F "possible wedge" "$out" >/dev/null 2>&1; then
+    unset FM_FAKE_CREW_STATE
+    fail "a declared bounded external wait was escalated as a possible wedge: $(cat "$out")"
+  fi
+  if [ -s "$state/.wake-queue" ] && grep -F "possible wedge" "$state/.wake-queue" >/dev/null 2>&1; then
+    unset FM_FAKE_CREW_STATE
+    fail "a declared bounded external wait queued a possible-wedge wake"
+  fi
+  unset FM_FAKE_CREW_STATE
+  pass "a declared bounded external wait is never escalated as a possible wedge"
+}
+
+# --- an unreadable current state escalates, but says what it actually knows ---
+# A guard that can never fire is not a guard: when the state cannot be read, the
+# wake must still surface. It must NOT claim the crew is wedged, because nobody
+# established that - the honest report is that the state could not be confirmed.
+test_unreadable_state_escalates_without_claiming_a_wedge() {
+  local dir state fakebin out capture_file window key pane_hash sig pid
+  dir=$(make_case unreadable-escalates); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-unreadable"
+  printf 'idle building output' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/unreadable.meta"
+  printf 'working: still compiling\n' > "$state/unreadable.status"
+  sig=$(seen_sig "$state/unreadable.status"); printf '%s' "$sig" > "$state/.seen-unreadable_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle building output")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  echo $(( $(date +%s) - 5000 )) > "$state/.stale-since-$key"
+  export FM_FAKE_CREW_STATE='state: unreadable · source: run-source · validation state could not be read (no-mistakes did not answer within 10s)'
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || { reap "$pid"; unset FM_FAKE_CREW_STATE; fail "an unreadable crew state was silently absorbed - a real alarm would be lost"; }
+  grep -F "unreadable" "$out" >/dev/null || { unset FM_FAKE_CREW_STATE; fail "the escalation did not report that the state was unreadable"; }
+  grep -F "possible wedge" "$out" >/dev/null && { unset FM_FAKE_CREW_STATE; fail "an unreadable state was reported as a measured wedge verdict"; }
+  unset FM_FAKE_CREW_STATE
+  pass "an unreadable current state still escalates, reported as unconfirmed rather than as a wedge"
 }
 
 # --- non-terminal stale, crew NOT provably working: surfaced immediately ------
@@ -982,7 +1173,12 @@ test_paused_authoritative_working_preserves_wedge_timer() {
   printf '%s' "$pane_hash" > "$state/.stale-$key"
   printf '1\n' > "$state/.count-$key"
   : > "$state/.paused-$key"
-  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  # Working on PANE evidence, not a pipeline-owned run: the authoritative state
+  # still outranks the stale `paused:` line and still keeps its wedge timer, but
+  # it remains escalatable. A pipeline-owned run is exempt from the escalation
+  # itself (test_active_run_not_wedge_escalated_past_threshold), so this case
+  # pins the override and timer behaviour without depending on that exemption.
+  export FM_FAKE_CREW_STATE='state: working · source: pane · harness busy (claude)'
 
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
@@ -1033,8 +1229,14 @@ test_wedge_escalation_marks_demand_deep_inspection_after_threshold() {
   pane_hash=$(hash_text "idle building output")
   printf '%s' "$pane_hash" > "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
-  # The crew's pipeline is actively running: a static pane is normal (waiting on CI).
-  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  # Provably working, but on PANE evidence with no pipeline run behind it - the
+  # shape a hung foreground call takes. That is absorbable on first sight and
+  # still escalates afterwards, which is what lets the repeat counter climb.
+  # (A pipeline-owned run is deliberately excluded from this path now: it is not
+  # a wedge, and re-escalating one was the false-alarm defect. The
+  # demand-deep-inspection marker stays reachable through exactly this case and
+  # the busy-pane turn-age bound.)
+  export FM_FAKE_CREW_STATE='state: working · source: pane · harness busy (claude)'
 
   # Priming round: first sighting of this stale hash classifies and absorbs it
   # (establishing .stale-$key and starting the wedge timer) without going
@@ -1861,6 +2063,10 @@ test_actionable_signal_surfaced
 test_terminal_stale_surfaced
 test_stale_terminal_status_overridden_by_active_run
 test_nonterminal_stale_provably_working_absorbed_then_escalated
+test_active_run_not_wedge_escalated_past_threshold
+test_busy_pane_alone_still_wedge_escalates
+test_declared_pause_never_wedge_escalates
+test_unreadable_state_escalates_without_claiming_a_wedge
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold
 test_wedge_escalation_resets_when_pane_becomes_active
 test_busy_pane_below_turn_age_bound_is_absorbed

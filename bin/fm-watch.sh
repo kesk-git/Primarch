@@ -274,13 +274,15 @@ FM_WEDGE_DEMAND_INSPECT_COUNT=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
 # Repeat-poll wedge-timer bookkeeping for an already-classified stale hash
 # absorbed as provably-working - repairs a missing/corrupt timer (self-heals a
 # watcher restart between recording the hash and recording the timer), or
-# escalates once STALE_ESCALATE_SECS have elapsed. Never re-reads the crew
-# state (the costly check already ran once, at classification time). Shared by
+# escalates once STALE_ESCALATE_SECS have elapsed. Cheap on ordinary polls: the
+# crew state is re-read only at the escalation moment itself, where staleness of
+# the original classification is exactly what produces a false alarm. Shared by
 # both places a hash can be absorbed this way: the plain non-terminal path,
 # and the stale_is_terminal-overridden path (a captain-relevant status-log
 # line that an active run/busy pane outranked).
 wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file>
   local win=$1 since_file=$2 label=$3 escalation_file=$4 since age n reason
+  local task
   since=$(cat "$since_file" 2>/dev/null || true)
   case "$since" in
     ''|*[!0-9]*)
@@ -290,11 +292,43 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
     *)
       age=$(( $(date +%s) - since ))
       if [ "$age" -ge "$STALE_ESCALATE_SECS" ]; then
+        task=$(window_to_task "$win" "$STATE")
+        # Re-read the authoritative state ONCE, here, at the only moment it can
+        # change the outcome. The classification that absorbed this hash may be
+        # many minutes old, and this timer used to escalate purely on elapsed
+        # time - so a crew whose pipeline run was progressing normally, or that
+        # had since declared a bounded wait, re-alarmed every STALE_ESCALATE_SECS
+        # for the whole run (measured: seven false escalations in one run). This
+        # costs one state read per escalation window per pane, not per poll.
+        if crew_run_is_active "$task"; then
+          # A run the pipeline owns is not a wedge: no-mistakes owns the crew for
+          # the run's duration and an idle pane is its NORMAL shape. Deliberately
+          # narrower than crew_is_provably_working - a merely busy pane must keep
+          # escalating here, or BUSY_TURN_MAX_SECS would never fire.
+          date +%s > "$since_file"
+          rm -f "$escalation_file"
+          triage_log "absorbed $label (pipeline-owned run active, not a wedge): $win"
+          return
+        fi
+        # A declared bounded external wait is deliberately NOT absorbed here.
+        # The non-terminal stale path already routes such a crew through
+        # pause_state_class / handle_paused_stale before it can reach this
+        # timer, and the one route that does reach here is a BUSY pane past
+        # BUSY_TURN_MAX_SECS - where honouring a `paused:` line would let a hung
+        # foreground call hide behind it, defeating the only bound that catches
+        # one.
         n=$(( $(cat "$escalation_file" 2>/dev/null || echo 0) + 1 ))
         echo "$n" > "$escalation_file"
-        reason="stale: $win (idle ${age}s, possible wedge, escalation $n)"
-        if [ "$n" -ge "$FM_WEDGE_DEMAND_INSPECT_COUNT" ]; then
-          reason="stale: $win (idle ${age}s, possible wedge, escalation $n, demand-deep-inspection: same pane has wedge-escalated $n times in a row - do not re-absorb on the run-step/pane state alone)"
+        if [ "$(crew_absorb_class "$task")" = unreadable ]; then
+          # Escalate, but never as a measured verdict about the crew: the guard
+          # fired because the state could not be read, which is a different
+          # problem from a crew that stopped, and needs a different look.
+          reason="stale: $win (idle ${age}s, current state unreadable - could not confirm whether this crew is working, escalation $n)"
+        else
+          reason="stale: $win (idle ${age}s, possible wedge, escalation $n)"
+          if [ "$n" -ge "$FM_WEDGE_DEMAND_INSPECT_COUNT" ]; then
+            reason="stale: $win (idle ${age}s, possible wedge, escalation $n, demand-deep-inspection: same pane has wedge-escalated $n times in a row - do not re-absorb on the run-step/pane state alone)"
+          fi
         fi
         fm_wake_append stale "$win" "$reason" || exit 1
         rm -f "$since_file"

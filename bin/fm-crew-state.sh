@@ -16,18 +16,37 @@
 # fixed mapping logic, no heuristics and no LLM. Output is one stable, parseable,
 # token-tight line firstmate can read every heartbeat:
 #
-#   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|none> · <detail>
+#   state: <working|parked|done|blocked|paused|failed|unknown|unreadable> · source: <run-step|pane|status-log|run-source|none> · <detail>
+#
+# `unreadable` is deliberately NOT another flavour of `unknown`. A supervisor
+# must be able to tell three cases apart, because they justify opposite actions:
+#   - a healthy running lane          -> working · run-step
+#   - no live run for this crew       -> unknown · none (the run source answered)
+#   - the run source did not answer   -> unreadable · run-source
+# Collapsing the third into the second renders an absence of measurement exactly
+# like a measurement, and anything downstream that then absorbs on it would be
+# spending evidence nobody gathered. The state token carries that distinction so
+# no caller has to remember the rule (fm-classify-lib.sh's crew_absorb_class is
+# the one place it is turned into an absorb decision).
 #
 # Logic, in order:
 #   1. Resolve worktree + backend target + kind from state/<id>.meta.
-#   2. Matching no-mistakes run for this crew's branch AND current code identity,
-#      active or terminal (from `axi status`, or the coarse `no-mistakes runs`
-#      fallback)? Branch name alone is not enough: a historical run on a reused
-#      branch whose head was rewritten or diverged must not be attributed.
-#      A run matches when its head equals the worktree HEAD, or the worktree HEAD
-#      is an ancestor of the run head (pipeline fix commits advanced the run on
-#      the same line of history). Local work that advanced past the run head, or
-#      diverged from it, invalidates attribution.
+#   2. Matching no-mistakes run for this crew's branch (from `axi status`, or the
+#      coarse `no-mistakes runs` fallback)? LIVENESS is decided first, and code
+#      identity only disambiguates FINISHED runs:
+#      - a run the pipeline is still holding (an unfinished run whose
+#        branch_sync block reports a live relationship to this branch, or an
+#        active row in the coarse list) is attributed on branch alone. It has
+#        to be: the pipeline commits its fix rounds in its OWN clone, so a
+#        healthy run's head is routinely unresolvable in this worktree exactly
+#        while the run is healthiest (fm_nm_head_matches_worktree owns why).
+#        Attributing the `axi status` record itself keeps the step and gate
+#        detail, so a live run parked at a gate is still reported as parked.
+#      - a finished run must still match this worktree's code identity, so a
+#        historical run on a reused or rewritten branch is never attributed.
+#        A run matches when its head equals the worktree HEAD, or the worktree
+#        HEAD is an ancestor of the run head. Local work that advanced past the
+#        run head, or diverged from it, invalidates attribution.
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
 #      awaiting_approval/fix_review -> parked (with gate findings), terminal
 #      passed/checks-passed -> done, failed/cancelled -> failed. EXCEPT: while
@@ -45,7 +64,10 @@
 #      `resolved` never become current state or detail.
 #   5. Missing meta or torn-down worktree: report unknown · none. If no run is
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
-#      than trusting a stale status log.
+#      than trusting a stale status log. If the run source itself never answered,
+#      report unreadable · run-source and do NOT fall through to the status log:
+#      spending a stale event line as current state is worst exactly when the
+#      authoritative source is down.
 #
 # Read-only and side-effect free. Always exits 0 on a successful read regardless
 # of state; exit 2 only on a usage error (no id).
@@ -352,15 +374,23 @@ nm_runs_status_for_branch() {  # <branch>
     rest=${rest#* }
     rest=$(trim "$rest")
     sha=${rest%% *}
-    if [ "$br" = "$branch" ]; then
-      # Same code-identity rule as axi status: skip a same-branch row whose
-      # short-sha does not match this worktree (rewritten or advanced tip).
-      if ! nm_coarse_head_matches_worktree "$sha"; then
-        continue
-      fi
+    [ "$br" = "$branch" ] || continue
+    # The branch's NEWEST row decides, and the walk stops here either way, so a
+    # superseded older row can never revive as this crew's current state.
+    if fm_nm_status_is_active "$st"; then
+      # A run the pipeline is still running on this crew's branch IS this
+      # crew's run. Demanding a code-identity match here is what made a
+      # healthy validating lane invisible: the pipeline commits its fix
+      # rounds into its own clone, so the run head is routinely unresolvable
+      # in this worktree exactly while the run is healthiest
+      # (fm_nm_head_matches_worktree's note owns the mechanism).
       printf '%s' "$st"
-      return 0
+    elif nm_coarse_head_matches_worktree "$sha"; then
+      # A FINISHED row must still prove code identity, so a historical run on
+      # a reused or rewritten branch is never attributed to current code.
+      printf '%s' "$st"
     fi
+    return 0
   done <<< "$out"
   return 0
 }
@@ -385,6 +415,45 @@ nm_coarse_head_matches_worktree() {  # <short-sha>
   fm_nm_head_matches_worktree "$WT" "$1"
 }
 
+# no-mistakes' own structural statement about who owns the branch right now,
+# from the branch_sync block of `axi status` (`state: pipeline_owned` while a
+# run holds the branch). Scoped to that block so an unrelated `state:` key
+# elsewhere in the record cannot answer for it.
+nm_branch_sync_state() {
+  local s
+  s=$(printf '%s\n' "$RUN_OUT" \
+    | sed -n '/^[[:space:]]*branch_sync:[[:space:]]*$/,/^[^[:space:]]/p' \
+    | sed -n 's/^[[:space:]]*state:[[:space:]]*\(.*\)/\1/p' | head -1)
+  strip_quotes "$s"
+}
+
+# 0 when this `axi status` record is a run the pipeline is holding RIGHT NOW for
+# this worktree's branch. Two independent facts must both hold:
+#   - the run is not finished (no outcome, non-terminal status), and
+#   - the branch_sync block reports a live pipeline relationship to this branch.
+# This outranks head identity, deliberately: the run head of a healthy run is
+# routinely unresolvable in this worktree (see fm_nm_head_matches_worktree's
+# note), so a sha comparison cannot answer "is this run live". Attributing the
+# `axi status` record itself - rather than letting it fall through to the coarse
+# runs list - is what preserves gate detail, so a live run PARKED at a gate with
+# a diverged head still reports `parked`, not a flat `working`.
+#
+# Observed branch_sync.state values on live runs (no-mistakes v1.46.0):
+# `pipeline_owned` while the pipeline holds the branch, and `behind` once its
+# fix commits have advanced past the crew's worktree. Any other value, or an
+# absent block, falls through to head binding, so a vocabulary this function
+# does not recognize NEVER grants attribution on its own.
+nm_pipeline_run_is_live() {
+  local st
+  [ -z "$(strip_quotes "$(nm_field outcome)")" ] || return 1
+  st=$(strip_quotes "$(nm_field status)")
+  ! fm_nm_status_is_terminal "$st" || return 1
+  case "$(nm_branch_sync_state)" in
+    pipeline_owned|behind) return 0 ;;
+  esac
+  return 1
+}
+
 HAVE_RUN=0
 # RUN_SOURCE distinguishes the two ways HAVE_RUN=1 can happen: "full" means
 # $RUN_OUT is real `axi status` TOON with step/gate detail; "coarse" means only
@@ -392,13 +461,38 @@ HAVE_RUN=0
 # run-step block below skips the TOON field parsing entirely for this crew.
 RUN_SOURCE=full
 COARSE_STATUS=""
+# How the RUN SOURCE itself answered, which is NOT the same question as whether
+# a run was attributed. Kept distinct because collapsing them is the reporting
+# defect this variable exists to prevent: "the pipeline has no live run for this
+# crew" is a measured fact, while "the pipeline did not answer" is an absence of
+# measurement, and only the first may be spent as evidence about the crew.
+#   skipped    - no run source applies (scout/secondmate, detached HEAD, no CLI)
+#   answered   - the CLI ran to completion; whatever it said, including an error
+#                such as `error: repo not initialized` (verified: written to
+#                stdout, exit 1) or a silent "no runs", is a MEASUREMENT
+#   unreadable - the bounded call never completed: it timed out (124), was killed
+#                by a signal (>128), or there was no timeout mechanism to bound
+#                it at all, in which case nothing ran and nothing was learned
+RUN_READ=skipped
 # Scouts and secondmates never drive a no-mistakes validation of their own
 # worktree, so skip the lookup for them and read state from pane/log directly.
 if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
-  RUN_OUT=$(nm_run axi status)
-  if [ -n "$RUN_OUT" ]; then
+  RUN_OUT=$(fm_nm_run_checked "$WT" "$NM_TIMEOUT" axi status)
+  RUN_RC=$?
+  # Discriminate on whether the CALL COMPLETED, not on whether it printed: an
+  # exit-0 silence is a real answer ("no run"), while a timeout that happens to
+  # be silent is not. Getting this backwards would report every quiet lane as
+  # unreadable and drown the honest signal in false ones.
+  if [ "$RUN_RC" -eq 124 ] || [ "$RUN_RC" -gt 128 ] ||
+     { [ "$RUN_RC" -ne 0 ] && [ -z "$RUN_OUT" ]; }; then
+    RUN_READ=unreadable
+  else
+    RUN_READ=answered
+  fi
+  if [ -n "$RUN_OUT" ] && [ "$RUN_READ" = answered ]; then
     run_branch=$(strip_quotes "$(nm_field branch)")
-    if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] && nm_run_head_matches_worktree; then
+    if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] &&
+       { nm_run_head_matches_worktree || nm_pipeline_run_is_live; }; then
       HAVE_RUN=1
     else
       # The active-or-most-recent run is for another branch, or same branch with
@@ -562,6 +656,18 @@ if [ "$KIND" != secondmate ]; then
   esac
 fi
 
+# The run source did not answer, and nothing above measured the crew directly.
+# Say that, rather than falling through to the status log: the log is an
+# append-only EVENT log, so spending its last line here would report a stale
+# event as a current measurement precisely when the authoritative source is
+# down. `unreadable` is deliberately its own state, not another `unknown`,
+# because a supervisor must be able to tell "this crew has no live run" from "I
+# could not find out" - the two justify opposite actions, and rendering them
+# identically is what makes an alarm unspendable.
+if [ "$RUN_READ" = unreadable ]; then
+  emit unreadable run-source "validation state could not be read (no-mistakes did not answer within ${NM_TIMEOUT}s)"
+fi
+
 # Fall back to the status log's last line, but ONLY when its verb maps to a real
 # run-state. A decision-closing event - resolved: (fm-classify-lib.sh's
 # FM_CLASSIFY_RESOLVE_VERB), and any future decision-only sibling - is NOT a state:
@@ -579,4 +685,10 @@ if [ -n "$LOG_VERB" ]; then
   fi
 fi
 
+# Distinct from the `unreadable` emit above: here the run source WAS consulted
+# and reported no live run for this crew, so "nothing to report" is itself a
+# measurement rather than a gap in one.
+if [ "$RUN_READ" = answered ]; then
+  emit unknown none "no live validation run for this branch, and no other current-state source available"
+fi
 emit unknown none "no current-state source available"
