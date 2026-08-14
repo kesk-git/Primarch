@@ -125,10 +125,11 @@ init_changed_fixture_repo() {
     >>"$repo/tests/fm-cd-pretool-check.test.sh"
   printf '# .pi/extensions/fm-primary-pi-watch.ts\n' >>"$repo/tests/fm-pi-watch-extension.test.sh"
   mkdir -p "$repo/.agents/skills/example" "$repo/.agents/notes" "$repo/.claude" \
-    "$repo/.pi/extensions" "$repo/src"
+    "$repo/.pi/extensions" "$repo/src" "$repo/skills/example"
   : >"$repo/.agents/notes/example.md"
   : >"$repo/bin/fm-project-mode.sh"
   : >"$repo/.agents/skills/example/SKILL.md"
+  : >"$repo/skills/example/SKILL.md"
   : >"$repo/.claude/settings.json"
   : >"$repo/.pi/extensions/fm-primary-pi-watch.ts"
   : >"$repo/.pi/extensions/fm-primary-turnend-guard.ts"
@@ -189,14 +190,15 @@ test_changed_dependency_selection_and_unmapped_failure() {
   pass "changed selection covers dependents and fails closed for unmapped source"
 }
 
-# Two mappings that exist because their absence broke something, so both are
-# pinned here. A per-task notes file has no consuming suite: it must select
-# nothing and succeed, not fail selection closed the way an unmapped source does
-# (that shape is the one asserted above, and it took `--changed` down for a whole
-# branch). The registry parser owns contracts read outside its own family - the
-# --lint rows bootstrap formats and the registry-invalid marker fleet sync selects
-# on - so it must pull in session-bootstrap too, or a parser change ships green
-# while the diagnostics that consume it go quiet.
+# Mappings that exist because their absence broke something, so each is pinned
+# here. A per-task notes file, and a public installer-facing skill under
+# top-level skills/, both have no consuming suite: each must select nothing and
+# succeed, not fail selection closed the way an unmapped source does (that shape
+# is the one asserted above, and it took `--changed` down for a whole branch).
+# The registry parser owns contracts read outside its own family - the --lint
+# rows bootstrap formats and the registry-invalid marker fleet sync selects on -
+# so it must pull in session-bootstrap too, or a parser change ships green while
+# the diagnostics that consume it go quiet.
 test_changed_selection_maps_notes_and_registry_parser() {
   local tmp repo listed rc
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-mapping.XXXXXX")
@@ -214,6 +216,22 @@ test_changed_selection_maps_notes_and_registry_parser() {
     || fail "a changed notes file must select no suite, got: $(cat "$tmp/out")"
   git -C "$repo" add .agents
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm notes-change
+
+  # A public installer-facing skill under top-level skills/ carries its own
+  # self-contained test, run directly rather than through this suite, and is
+  # never referenced by tests/*.test.sh: it must select nothing and succeed,
+  # not fail selection closed the way an unmapped source does.
+  printf '\n' >>"$repo/skills/example/SKILL.md"
+  set +e
+  (cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD) >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] \
+    || fail "a changed public-skill file must not fail selection, got exit $rc: $(cat "$tmp/err")"
+  [ ! -s "$tmp/out" ] \
+    || fail "a changed public-skill file must select no suite, got: $(cat "$tmp/out")"
+  git -C "$repo" add skills
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm skills-change
 
   printf '\n' >>"$repo/bin/fm-project-mode.sh"
   listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)

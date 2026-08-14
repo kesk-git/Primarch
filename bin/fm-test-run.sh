@@ -1035,7 +1035,10 @@ families_for_changed_path() {
     tests/*)
       printf '%s\n' "__unmapped__:$path"
       ;;
-    README.md|LICENSE|assets/*|docs/*|.gitignore|.agents/notes/*)
+    README.md|LICENSE|assets/*|docs/*|.gitignore|.agents/notes/*|skills/*)
+      # Public installer-facing skills under skills/ carry their own
+      # self-contained tests (run directly, not through this suite) and are
+      # never referenced by tests/*.test.sh, so they have no family here.
       ;;
     *)
       families_for_test_reference "$path" \

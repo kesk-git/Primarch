@@ -113,6 +113,10 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": ".agents/notes/fm-publish-notes-lane-skill.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": ".agents/notes/fm-registry-typo-silently-defaults.md",
       "audience": "maintainer-architecture"
     },
@@ -383,6 +387,10 @@
     {
       "path": "docs/zellij-backend.md",
       "audience": "operator-current"
+    },
+    {
+      "path": "skills/firstmate-notes/SKILL.md",
+      "audience": "public-product"
     },
     {
       "path": "skills/stow/SKILL.md",
