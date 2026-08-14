@@ -226,6 +226,24 @@ test_scan_resolves_a_subdirectory_to_its_worktree_root() {
   pass "scan resolves a subdirectory to its worktree root instead of reporting clean"
 }
 
+# Resolving to worktree roots means several named paths can be one repo, and a
+# count that multiplies by however many ways the caller happened to name it is
+# not a count anyone can act on.
+test_scan_counts_one_repo_once_however_it_is_named() {
+  local repo out rc blocks
+  repo=$(new_repo scanoverlap)
+  mkdir -p "$repo/src/deep"
+  "$NOTES" new alpha --dir "$repo" >/dev/null
+  "$NOTES" new beta --dir "$repo" >/dev/null
+
+  out=$("$NOTES" scan "$repo" "$repo/src/deep" "$repo" 2>&1); rc=$?
+  [ "$rc" -eq 3 ] || fail "scan of a root and its own subdirectory did not report pending notes (exit $rc)"
+  contains "$out" "2 note(s) waiting" "scan did not total the repo's notes exactly once"
+  blocks=$(printf '%s\n' "$out" | grep -c '^unfolded: ')
+  [ "$blocks" -eq 1 ] || fail "scan printed the same repo $blocks times:"$'\n'"$out"
+  pass "one repo counts and prints once however many of its paths are named"
+}
+
 # The firstmate repo is never under projects/, so anything that iterates only
 # projects/ silently skips the repo firstmate's own crewmates work in most.
 test_scan_covers_the_firstmate_home_itself() {
@@ -276,6 +294,7 @@ test_unsafe_ids_refused
 test_scan_reports_and_exits_3
 test_scan_refuses_a_target_it_cannot_read
 test_scan_resolves_a_subdirectory_to_its_worktree_root
+test_scan_counts_one_repo_once_however_it_is_named
 test_scan_covers_the_firstmate_home_itself
 test_no_prefix_collision_between_similar_names
 

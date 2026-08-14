@@ -35,7 +35,9 @@
 # and stays visible. Git history keeps a retired note recoverable.
 #
 # scan is the loud counter. With explicit directories it scans exactly those,
-# each resolved to its enclosing worktree root like --dir. With none it needs
+# each resolved to its enclosing worktree root like --dir, and a repo named more
+# than once - as itself and as one of its own subdirectories, say - is one root
+# to scan, counted and printed once. With none it needs
 # FM_HOME and scans that home's projects/* clones AND FM_HOME itself, because a
 # firstmate home IS a firstmate checkout: the firstmate repo is never under
 # projects/, so anything that iterates only projects/ silently skips the one repo
@@ -146,6 +148,17 @@ count_in() {
   printf '%s\n' "$n"
 }
 
+# TARGETS is the set of roots scan visits, and this is the only way into it:
+# a root already held is not added again, so several paths naming one repo
+# cannot reach the counting loop as more than one repo.
+hold_root() {
+  local root=$1 held
+  for held in ${TARGETS[@]+"${TARGETS[@]}"}; do
+    [ "$held" != "$root" ] || return 0
+  done
+  TARGETS+=("$root")
+}
+
 case "$CMD" in
   path|new)
     ID=${ARGS[0]:-}
@@ -209,7 +222,7 @@ case "$CMD" in
       # read is an error naming it, never a skip that would read as a clear lane.
       for target in "${ARGS[@]}"; do
         resolved=$(resolve_dir "$target") || exit $?
-        TARGETS+=("$resolved")
+        hold_root "$resolved"
       done
     else
       [ -n "${FM_HOME:-}" ] || {
@@ -218,11 +231,11 @@ case "$CMD" in
       }
       # FM_HOME itself is a firstmate checkout and is never under projects/,
       # so scan it alongside the clones or its own notes go uncounted forever.
-      TARGETS=("$FM_HOME")
+      hold_root "$FM_HOME"
       if [ -d "$FM_HOME/projects" ]; then
         for proj in "$FM_HOME"/projects/*; do
           [ -d "$proj" ] || continue
-          TARGETS+=("$proj")
+          hold_root "$proj"
         done
       fi
     fi
