@@ -57,7 +57,7 @@ FM_HOME=<home> ~/.claude/skills/firstmate-notes/fm-notes.sh scan
 ~/.claude/skills/firstmate-notes/fm-notes.sh scan <dir>...
 ```
 
-The `FM_HOME` form scans that home's `projects/*` clones **and `FM_HOME` itself**, because a firstmate home is a firstmate checkout and the firstmate repo is never under `projects/` - anything that iterates only `projects/` silently skips the repo its own crewmates work in most. It exits `3` when anything is pending and `0` when the lane is clear, so it works as a mechanical check rather than something to eyeball.
+Only the list of repos differs. Either way, `scan` counts the pending notes in each repo on that list, prints a line for every repo holding any, and exits `3` when the total is above zero and `0` when it is zero - so both forms work as a mechanical check rather than something to eyeball. `FM_HOME`'s list is that home's `projects/*` clones **and `FM_HOME` itself**, because a firstmate home is a firstmate checkout and the firstmate repo is never under `projects/` - anything that iterates only `projects/` silently skips the repo its own crewmates work in most.
 
 ## Why this exists
 
