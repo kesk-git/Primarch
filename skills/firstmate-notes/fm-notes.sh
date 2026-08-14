@@ -34,13 +34,16 @@
 # the fold finally runs, so a fold that is late, skipped, or failed loses nothing
 # and stays visible. Git history keeps a retired note recoverable.
 #
-# scan is the loud counter. With explicit directories it scans exactly those.
-# With none it needs FM_HOME and scans that home's projects/* clones AND FM_HOME
-# itself, because a firstmate home IS a firstmate checkout: the firstmate repo is
-# never under projects/, so anything that iterates only projects/ silently skips
-# the one repo its own crewmates work in most. It prints one line per repo
-# holding notes and a summary, and exits 3 when any note is pending so it can be
-# used as a mechanical check; 0 means the lane is clear.
+# scan is the loud counter. With explicit directories it scans exactly those,
+# each resolved to its enclosing worktree root like --dir. With none it needs
+# FM_HOME and scans that home's projects/* clones AND FM_HOME itself, because a
+# firstmate home IS a firstmate checkout: the firstmate repo is never under
+# projects/, so anything that iterates only projects/ silently skips the one repo
+# its own crewmates work in most. It prints one line per repo holding notes and a
+# summary. Three outcomes, three exit codes, so it can be used as a mechanical
+# check: 3 when any note is pending, 0 when every scanned repo is clear, and 1
+# when a named directory cannot be read - an unreadable path is reported, never
+# counted as nothing found, which would be indistinguishable from a clear lane.
 #
 # Every id is matched exactly, never by glob or prefix. An earlier design keyed
 # on a "<name>-*" glob and a project named `web` collided with a live `web-api`;
@@ -201,7 +204,13 @@ case "$CMD" in
   scan)
     TARGETS=()
     if [ "${#ARGS[@]}" -gt 0 ]; then
-      TARGETS=("${ARGS[@]}")
+      # Every named directory is resolved before anything is counted, the way
+      # retire validates every id before deleting anything: a path scan cannot
+      # read is an error naming it, never a skip that would read as a clear lane.
+      for target in "${ARGS[@]}"; do
+        resolved=$(resolve_dir "$target") || exit $?
+        TARGETS+=("$resolved")
+      done
     else
       [ -n "${FM_HOME:-}" ] || {
         echo "error: scan needs FM_HOME, or explicit directories to scan" >&2
@@ -219,7 +228,6 @@ case "$CMD" in
     fi
     total=0
     for target in "${TARGETS[@]}"; do
-      [ -d "$target" ] || continue
       resolved=$(CDPATH='' cd -- "$target" 2>/dev/null && pwd -P) || continue
       n=$(count_in "$resolved")
       [ "$n" -gt 0 ] || continue

@@ -182,6 +182,50 @@ test_scan_reports_and_exits_3() {
   pass "scan is loud with pending notes and silent once folded"
 }
 
+# The explicit-directory form is the one that takes paths a person typed, and it
+# is the only form available without a firstmate home. A path it cannot read must
+# be reported: counting nothing there is indistinguishable from a clear lane,
+# which is the single failure this check exists to prevent.
+test_scan_refuses_a_target_it_cannot_read() {
+  local repo out rc
+  repo=$(new_repo scanbad)
+  "$NOTES" new pending-one --dir "$repo" >/dev/null
+
+  out=$("$NOTES" scan "$repo-typo" 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "scan of a nonexistent path exited 0, reading as a clear lane"
+  [ "$rc" -ne 3 ] || fail "scan of a nonexistent path exited 3, reading as pending notes"
+  contains "$out" "$repo-typo" "scan's refusal did not name the unreadable path"
+
+  : > "$TMP/not-a-repo"
+  out=$("$NOTES" scan "$TMP/not-a-repo" 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "scan of a plain file exited 0, reading as a clear lane"
+  [ "$rc" -ne 3 ] || fail "scan of a plain file exited 3, reading as pending notes"
+  contains "$out" "not-a-repo" "scan's refusal did not name the non-directory path"
+
+  # An unreadable target beside a clean one must not be absorbed into its 0.
+  local clean
+  clean=$(new_repo scanclean)
+  out=$("$NOTES" scan "$clean" "$repo-typo" 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "an unreadable target beside a clean repo still exited 0"
+  [ "$rc" -ne 3 ] || fail "an unreadable target beside a clean repo exited 3, reading as pending notes"
+  contains "$out" "$repo-typo" "the mixed-target refusal did not name the unreadable path"
+  pass "scan reports a target it cannot read instead of a clear lane"
+}
+
+# Every other command resolves its directory to the enclosing worktree root, so
+# a repo's own subdirectory must count that repo's notes, not report zero.
+test_scan_resolves_a_subdirectory_to_its_worktree_root() {
+  local repo out rc
+  repo=$(new_repo scansub)
+  mkdir -p "$repo/src/deep"
+  "$NOTES" new buried --dir "$repo" >/dev/null
+
+  out=$("$NOTES" scan "$repo/src/deep" 2>&1); rc=$?
+  [ "$rc" -eq 3 ] || fail "scan of a subdirectory missed its repo's pending note (exit $rc)"
+  contains "$out" "buried" "scan of a subdirectory did not name the pending note"
+  pass "scan resolves a subdirectory to its worktree root instead of reporting clean"
+}
+
 # The firstmate repo is never under projects/, so anything that iterates only
 # projects/ silently skips the repo firstmate's own crewmates work in most.
 test_scan_covers_the_firstmate_home_itself() {
@@ -230,6 +274,8 @@ test_retire_is_all_or_nothing
 test_retire_leaves_unfolded_notes_pending
 test_unsafe_ids_refused
 test_scan_reports_and_exits_3
+test_scan_refuses_a_target_it_cannot_read
+test_scan_resolves_a_subdirectory_to_its_worktree_root
 test_scan_covers_the_firstmate_home_itself
 test_no_prefix_collision_between_similar_names
 

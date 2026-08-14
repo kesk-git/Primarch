@@ -57,7 +57,7 @@ FM_HOME=<home> ~/.claude/skills/firstmate-notes/fm-notes.sh scan
 ~/.claude/skills/firstmate-notes/fm-notes.sh scan <dir>...
 ```
 
-Only the list of repos differs. Either way, `scan` counts the pending notes in each repo on that list, prints a line for every repo holding any, and exits `3` when the total is above zero and `0` when it is zero - so both forms work as a mechanical check rather than something to eyeball. `FM_HOME`'s list is that home's `projects/*` clones **and `FM_HOME` itself**, because a firstmate home is a firstmate checkout and the firstmate repo is never under `projects/` - anything that iterates only `projects/` silently skips the repo its own crewmates work in most.
+Only the list of repos differs. Either way, `scan` counts the pending notes in each repo on that list, prints a line for every repo holding any, and exits `3` when the total is above zero and `0` when it is zero - so both forms work as a mechanical check rather than something to eyeball. A directory you name is resolved to its enclosing worktree root, and one that cannot be read is reported and exits `1`: three outcomes, three exit codes, because a path it could not look at must never be reported as nothing found. `FM_HOME`'s list is that home's `projects/*` clones **and `FM_HOME` itself**, because a firstmate home is a firstmate checkout and the firstmate repo is never under `projects/` - anything that iterates only `projects/` silently skips the repo its own crewmates work in most.
 
 ## Why this exists
 
