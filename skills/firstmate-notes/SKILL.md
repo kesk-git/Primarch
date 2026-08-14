@@ -51,10 +51,13 @@ Retiring is the **only** thing that marks a note folded; there is no separate fo
 An unfolded note is invisible in every diff, so this check is the only thing between a skipped fold and knowledge that silently stops shipping:
 
 ```sh
+# With a firstmate home: scans that home's projects/* clones and the home itself.
 FM_HOME=<home> ~/.claude/skills/firstmate-notes/fm-notes.sh scan
+# With no firstmate home (a fresh machine, this skill installed on its own): name the repos to scan.
+~/.claude/skills/firstmate-notes/fm-notes.sh scan <dir>...
 ```
 
-It scans that home's `projects/*` clones **and `FM_HOME` itself**, because a firstmate home is a firstmate checkout and the firstmate repo is never under `projects/` - anything that iterates only `projects/` silently skips the repo its own crewmates work in most. It exits `3` when anything is pending and `0` when the lane is clear, so it works as a mechanical check rather than something to eyeball.
+The `FM_HOME` form scans that home's `projects/*` clones **and `FM_HOME` itself**, because a firstmate home is a firstmate checkout and the firstmate repo is never under `projects/` - anything that iterates only `projects/` silently skips the repo its own crewmates work in most. It exits `3` when anything is pending and `0` when the lane is clear, so it works as a mechanical check rather than something to eyeball.
 
 ## Why this exists
 

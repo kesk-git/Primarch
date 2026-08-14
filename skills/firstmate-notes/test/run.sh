@@ -14,6 +14,7 @@ pass() { echo "ok - $1"; }
 fail() { echo "FAIL - $1"; FAILED=1; }
 present() { [ -e "$1" ] || { fail "${2:-missing: $1}"; return 1; }; }
 absent() { [ ! -e "$1" ] || { fail "${2:-unexpectedly present: $1}"; return 1; }; }
+# shellcheck disable=SC2016 # the single quotes are literal; the enclosing string is double-quoted, so $2 and $1 do expand
 contains() { case "$1" in *"$2"*) ;; *) fail "${3:-expected '$2' in: $1}" ;; esac; }
 
 # A throwaway git repo, returned as its resolved path (macOS /var vs /private/var).

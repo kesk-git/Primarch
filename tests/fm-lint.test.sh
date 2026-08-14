@@ -29,13 +29,24 @@ pinned_ready() {
   [ "$(shellcheck --version | awk '/^version:/ {print $2; exit}')" = "$REQUIRED" ]
 }
 
+# The complete shell inventory: the direct *.sh children of bin/, bin/backends/
+# and tests/, plus every *.sh at any depth under skills/. A published skill owns
+# executable scripts at its own depth (skills/<name>/test/run.sh), and those
+# shipped with zero repo-side coverage until skills/ joined the canonical set.
+fm_lint_expected_inventory() {
+  {
+    find bin bin/backends tests -maxdepth 1 -type f -name '*.sh' -print
+    find skills -type f -name '*.sh' -print 2>/dev/null
+  } | LC_ALL=C sort
+}
+
 test_list_files_reports_the_shell_inventory() {
   local listed expected
   # CI=true forces the full canonical set regardless of the ambient branch or
   # working-tree diff a local test run happens to have, so this stays a pure
   # inventory check independent of fm-lint.sh's own changed-file mode below.
   listed=$(CI=true "$LINT" --list-files)
-  expected=$(find bin bin/backends tests -maxdepth 1 -type f -name '*.sh' -print | LC_ALL=C sort)
+  expected=$(fm_lint_expected_inventory)
   [ "$(printf '%s\n' "$listed" | LC_ALL=C sort)" = "$expected" ] \
     || fail "fm-lint.sh --list-files did not return the complete shell inventory"
   pass "fm-lint.sh --list-files reports the complete shell inventory"
@@ -149,7 +160,7 @@ test_ci_forces_full_lint_even_with_empty_diff() {
   # No git stub: CI=true must short-circuit fm-lint.sh's mode selection before
   # it ever consults git, so this proves CI wins regardless of local diff state.
   listed=$(CI=true "$LINT" --list-files)
-  expected=$(find bin bin/backends tests -maxdepth 1 -type f -name '*.sh' -print | LC_ALL=C sort)
+  expected=$(fm_lint_expected_inventory)
   [ "$(printf '%s\n' "$listed" | LC_ALL=C sort)" = "$expected" ] \
     || fail "CI=true did not force the full canonical file set"
   pass "fm-lint.sh forces a full lint in CI even when the local diff would be empty"
@@ -165,7 +176,7 @@ test_main_branch_forces_full_lint() {
   # not the ambient CI signal a real CI run would otherwise supply.
   listed=$(PATH="$fakebin:$PATH" GITHUB_ACTIONS='' CI='' \
     FM_TEST_GIT_BRANCH=main "$LINT" --list-files)
-  expected=$(find bin bin/backends tests -maxdepth 1 -type f -name '*.sh' -print | LC_ALL=C sort)
+  expected=$(fm_lint_expected_inventory)
   [ "$(printf '%s\n' "$listed" | LC_ALL=C sort)" = "$expected" ] \
     || fail "fm-lint.sh did not force a full lint when HEAD is on main"
   pass "fm-lint.sh forces a full lint when HEAD is on main"
@@ -217,16 +228,18 @@ test_list_files_respects_changed_mode() {
   fakebin=$(fm_fakebin "$tmp")
   fm_lint_stub_git "$fakebin"
   diff_file="$tmp/diff.nul"
-  # A real canonical file, a non-canonical file, and a canonical-looking path
-  # that does not exist: only the first should survive into the listed set.
+  # Two real canonical files - one of them a published skill's own nested script,
+  # which is not a direct child of skills/<name>/ - plus a non-canonical file and
+  # a canonical-looking path that does not exist: only the real two survive.
   fm_lint_write_diff_file "$diff_file" \
-    "tests/fm-lint.test.sh" "docs/README.md" "bin/definitely-not-real-file.sh"
+    "tests/fm-lint.test.sh" "skills/firstmate-notes/test/run.sh" \
+    "docs/README.md" "bin/definitely-not-real-file.sh"
 
   # Clear CI/GITHUB_ACTIONS so --list-files reflects the changed set rather than
   # the full canonical set a CI run's ambient signals would otherwise force.
   listed=$(PATH="$fakebin:$PATH" GITHUB_ACTIONS='' CI='' FM_TEST_GIT_BRANCH=feature \
     FM_TEST_GIT_DIFF_FILE="$diff_file" "$LINT" --list-files)
-  [ "$listed" = "tests/fm-lint.test.sh" ] \
+  [ "$listed" = "skills/firstmate-notes/test/run.sh"$'\n'"tests/fm-lint.test.sh" ] \
     || fail "--list-files did not report the would-be changed set in changed mode"$'\n'"got: $listed"
   pass "fm-lint.sh --list-files reports the would-be changed set in changed mode"
 }
