@@ -852,11 +852,13 @@ fm_lock_try_acquire() {
 }
 
 # Blocks until the lock is held. Waiting is only honest while the lock CAN be
-# taken: an unusable lock root never yields one, and neither does a lock this
-# very process already holds - the only shell that could release it is the one
-# blocked here. Both return non-zero so the caller takes its existing failure
-# path instead of blocking forever. A signal trap is how the second case
-# arrives: traps run between commands, so a TERM taken inside a marker's
+# taken: an unusable lock root never yields one, so it returns non-zero and the
+# caller takes its existing failure path instead of blocking forever. A lock
+# this very process already holds is never released by waiting either - the
+# only shell that could release it is the one blocked here - so acquisition
+# reclaims that abandoned hold instead of spinning against itself, and only a
+# reclaim that FAILS ends the wait non-zero. A signal trap is how a self-held
+# lock arrives: traps run between commands, so a TERM taken inside a marker's
 # critical section leaves that lock held and jumps to a cleanup path that
 # acquires it again. Contention with any OTHER holder is still waited out
 # indefinitely, unchanged.

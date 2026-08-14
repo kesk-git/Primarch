@@ -161,7 +161,7 @@ test_lock_root_removed_mid_acquire_fails_instead_of_spinning() {
   pass "acquisition fails on a removed lock root and still waits out a live holder"
 }
 
-test_lock_self_held_wait_fails_instead_of_deadlocking() {
+test_lock_self_held_wait_reclaims_instead_of_deadlocking() {
   # A lock this very process already holds is never released by waiting for it:
   # the only shell that could release it is the one blocked in the wait. That
   # is not hypothetical. A trap runs between commands, so a TERM taken inside
@@ -170,7 +170,12 @@ test_lock_self_held_wait_fails_instead_of_deadlocking() {
   # lock again - and waited at 0.1s forever. The watcher then survived every
   # signal, holding the singleton lock and the stdout of whoever started it;
   # in CI that wedged the whole shard behind one unkillable process.
-  local dir state rc live
+  # The lock owner resolves that by reclaiming the abandoned same-process hold
+  # (tests/fm-wake-queue.test.sh owns that primitive's own regression), so the
+  # EXIT path must do more than return: it must finish the work the wedge ate -
+  # publish the durable downtime evidence and release the watch lock - and
+  # leave no reclaimed marker lock behind.
+  local dir state rc token live
   dir=$(make_case lock-self-held)
   state="$dir/state"
 
@@ -178,16 +183,33 @@ test_lock_self_held_wait_fails_instead_of_deadlocking() {
   # shellcheck disable=SC2016 # Positional parameters expand inside the child bash, not here.
   fm_run_timed 30 env FM_STATE_OVERRIDE="$state" bash -c '
     . "$1"
+    fm_lock_try_acquire "$4" || exit 4
     fm_lock_try_acquire "$2" || exit 3
     fm_recovery_transition "$3" release-lock "$4" downtime
   ' _ "$LIB" "$state/.watcher-down.lock" "$state/.watcher-down" \
     "$state/.watch.lock" >/dev/null 2>&1 || rc=$?
   [ "$rc" -ne 124 ] || fail "the EXIT-path recovery transition never returned while this process still held the marker lock"
+  [ "$rc" -ne 4 ] || fail "the case could not take the watch lock the transition has to release"
   [ "$rc" -ne 3 ] || fail "the case could not take the marker lock it needs to hold"
-  [ "$rc" -ne 0 ] || fail "the transition reported success for a marker lock it could not have taken"
+  [ "$rc" -eq 0 ] || fail "the EXIT-path recovery transition failed over its own abandoned marker hold (rc=$rc)"
+  token=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_recovery_marker_read "$2" || exit 1
+    printf "%s\n" "$FM_RECOVERY_MARKER_TOKEN"
+  ' _ "$LIB" "$state/.watcher-down") \
+    || fail "the EXIT-path transition left no durable recovery evidence"
+  case "$token" in
+    pending:downtime:*) ;;
+    *) fail "the EXIT-path transition published invalid recovery evidence: $token" ;;
+  esac
+  [ ! -e "$state/.watch.lock" ] && [ ! -L "$state/.watch.lock" ] \
+    || fail "the transition reported success without releasing the watch lock"
+  [ ! -e "$state/.watcher-down.lock" ] && [ ! -L "$state/.watcher-down.lock" ] \
+    || fail "the reclaimed marker lock was left held after the transition"
 
-  # Adversarial: only the waiter's OWN hold is hopeless. A live holder that is
-  # some other process is ordinary contention and must still be waited out.
+  # Adversarial: only the waiter's OWN abandoned hold is reclaimable. A live
+  # holder that is some other process is ordinary contention and must still be
+  # waited out rather than stolen.
   sleep 300 &
   live=$!
   mkdir "$state/.other.lock"
@@ -197,7 +219,7 @@ test_lock_self_held_wait_fails_instead_of_deadlocking() {
   kill "$live" 2>/dev/null || true
   wait "$live" 2>/dev/null || true
   [ "$rc" -eq 124 ] || fail "wait abandoned a lock held by a live other process instead of waiting (rc=$rc)"
-  pass "a lock the waiting process already holds fails the wait instead of deadlocking it"
+  pass "an abandoned same-process marker hold is reclaimed by the exit path instead of deadlocking it"
 }
 
 test_live_stale_watch_lock_is_actionable() {
@@ -1317,7 +1339,7 @@ fm_test_run_cases \
   test_stale_watch_lock_reclaimed \
   test_stale_watch_reclaim_publishes_before_clear \
   test_lock_root_removed_mid_acquire_fails_instead_of_spinning \
-  test_lock_self_held_wait_fails_instead_of_deadlocking \
+  test_lock_self_held_wait_reclaims_instead_of_deadlocking \
   test_live_stale_watch_lock_is_actionable \
   test_guard_warnings \
   test_lock_single_winner_under_concurrency \
