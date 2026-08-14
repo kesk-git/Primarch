@@ -82,4 +82,4 @@ No predictor can recover that; only the convention can.
 ~/.claude/skills/firstmate-notes/test/run.sh
 ```
 
-The load-bearing one builds two real branches and proves the old convention **conflicts** while the note lane **merges clean** and the fold still lands both facts. The rest pin `scan`'s firstmate-home coverage, the prefix-collision case, all-or-nothing `retire`, and unsafe-id refusal.
+The load-bearing one builds two real branches and proves the old convention **conflicts** while the note lane **merges clean** and the fold still lands both facts. The rest pin `scan`'s three outcomes across both invocation forms, the prefix-collision case, all-or-nothing `retire`, and unsafe-id refusal.
