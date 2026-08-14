@@ -73,6 +73,9 @@ set -eu
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
 
+# shellcheck source=bin/fm-test-env-lib.sh
+. "$ROOT/bin/fm-test-env-lib.sh"
+
 MODE=
 LIST_ONLY=0
 LIST_FAMILIES=0
@@ -853,6 +856,14 @@ families_for_changed_path() {
     bin/fm-test-run.sh|bin/fm-test-isolation-proof.sh)
       printf '%s\n' pure-contract-unit
       ;;
+    bin/fm-test-env-lib.sh)
+      # The home-selection scrub reaches every suite through tests/lib.sh, so it
+      # selects the same dependents that a change to that shared helper does,
+      # plus the runners' own contract coverage.
+      printf '%s\n' pure-contract-unit
+      families_for_test_reference lib.sh \
+        || printf '%s\n' "__unmapped__:$path"
+      ;;
     bin/backends/herdr*|bin/fm-herdr-lab.sh|tests/herdr-test-safety.sh)
       printf '%s\n' real-herdr-gated
       printf '%s\n' backend-dispatch
@@ -1546,10 +1557,10 @@ run_one_serial() {
   # script resolves FM_HOME first ("${FM_HOME:-${FM_ROOT_OVERRIDE:-...}}"). Every
   # firstmate session exports FM_HOME, so without this a serial run asserts
   # against the developer's REAL home instead of the fixture, and the same suite
-  # passes or fails depending only on which lane ran it.
+  # passes or fails depending only on which lane ran it. The list itself lives in
+  # bin/fm-test-env-lib.sh so the two lanes cannot drift apart again.
   (
-    unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
-      FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
+    fm_test_scrub_home_selection_env
     bash "$script" 2>&1
   ) | tee "$out"
   rc=${PIPESTATUS[0]}
@@ -1654,8 +1665,7 @@ else
       set +e
       export TMPDIR="$work/tmp"
       export TMP="$work/tmp"
-      unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
-        FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
+      fm_test_scrub_home_selection_env
       cd "$ROOT" || exit 1
       begin_ms=$(now_ms)
       bash "$script" >"$work/output" 2>&1

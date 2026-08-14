@@ -92,6 +92,7 @@ init_changed_fixture_repo() {
   local repo=$1 script
   mkdir -p "$repo/bin" "$repo/tests"
   cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  cp "$ROOT/bin/fm-test-env-lib.sh" "$repo/bin/fm-test-env-lib.sh"
   chmod +x "$repo/bin/fm-test-run.sh"
   for script in \
     fm-brief.test.sh \
@@ -507,6 +508,7 @@ test_jobs_parallel_scheduler_and_failure_propagation() {
   d=tests/fm-supervision-instructions.test.sh
   mkdir -p "$repo/bin" "$repo/tests" "$evidence" "$fake_bin"
   cp "$RUNNER" "$runner"
+  cp "$ROOT/bin/fm-test-env-lib.sh" "$repo/bin/fm-test-env-lib.sh"
   cat >"$fake_bin/stat" <<'SH'
 #!/usr/bin/env bash
 if [ "$1" = "-c" ] && [ "$2" = "%a" ]; then
@@ -642,6 +644,7 @@ test_serial_run_scrubs_the_ambient_home_selection() {
   fixture=tests/fm-lint.test.sh
   mkdir -p "$repo/bin" "$repo/tests"
   cp "$RUNNER" "$runner"
+  cp "$ROOT/bin/fm-test-env-lib.sh" "$repo/bin/fm-test-env-lib.sh"
   # The fixture reports what it actually inherited, so the assertion reads the
   # child's real environment rather than the parent's intent.
   cat >"$repo/$fixture" <<'SH'
@@ -681,6 +684,101 @@ SH
 
   rm -rf "$tmp"
   pass "serial run scrubs the ambient home selection like the parallel path"
+}
+
+test_direct_invocation_scrubs_the_ambient_home_selection() {
+  # The runner is not the only way a suite runs. Invoking one suite - or one
+  # case - directly is exactly what people do when something is already wrong,
+  # and there the ambient FM_HOME outranks the FM_ROOT_OVERRIDE the case uses to
+  # name its fixture just as badly. tests/lib.sh owns the same scrub for that
+  # path, so the verdict does not depend on how the suite was started.
+  local tmp suite out rc
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-home-scrub-lib.XXXXXX")
+  suite="$tmp/ambient.test.sh"
+  cat >"$suite" <<SH
+#!/usr/bin/env bash
+set -u
+# shellcheck source=tests/lib.sh
+. "$ROOT/tests/lib.sh"
+saw_case() {
+  printf 'SAW_FM_HOME=[%s]\n' "\${FM_HOME:-}"
+  printf 'SAW_FM_ROOT_OVERRIDE=[%s]\n' "\${FM_ROOT_OVERRIDE:-}"
+  printf 'SAW_FM_CONFIG_OVERRIDE=[%s]\n' "\${FM_CONFIG_OVERRIDE:-}"
+  pass "case ran"
+}
+fm_test_run_cases saw_case
+SH
+  chmod 0755 "$suite"
+
+  rc=0
+  out=$(env -u FM_TEST_CASE -u FM_TEST_HOME_SCRUB_DONE \
+    FM_HOME=/sentinel/home FM_ROOT_OVERRIDE=/sentinel/root \
+    FM_CONFIG_OVERRIDE=/sentinel/config bash "$suite" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || { rm -rf "$tmp"; fail "directly invoked suite failed (rc=$rc): $out"; }
+  assert_contains "$out" 'SAW_FM_HOME=[]' "direct invocation leaked the ambient FM_HOME"
+  assert_contains "$out" 'SAW_FM_ROOT_OVERRIDE=[]' "direct invocation leaked the ambient FM_ROOT_OVERRIDE"
+  assert_contains "$out" 'SAW_FM_CONFIG_OVERRIDE=[]' "direct invocation leaked the ambient FM_CONFIG_OVERRIDE"
+
+  # Non-vacuous: the same sentinels, with the scrub already claimed by an
+  # enclosing test process, must reach the case untouched. Without this a suite
+  # that never received them at all would report the same empty values.
+  rc=0
+  out=$(env -u FM_TEST_CASE FM_TEST_HOME_SCRUB_DONE=1 \
+    FM_HOME=/sentinel/home FM_ROOT_OVERRIDE=/sentinel/root \
+    FM_CONFIG_OVERRIDE=/sentinel/config bash "$suite" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || { rm -rf "$tmp"; fail "already-scrubbed suite failed (rc=$rc): $out"; }
+  assert_contains "$out" 'SAW_FM_HOME=[/sentinel/home]' \
+    "sentinels never reached the suite, so the scrub assertion above proves nothing"
+
+  rm -rf "$tmp"
+  pass "a directly invoked suite scrubs the ambient home selection too"
+}
+
+test_suite_owned_home_selection_survives_the_scrub() {
+  # The scrub clears only what was INHERITED. A default a suite sets for itself
+  # after sourcing the library - tests/wake-helpers.sh's inert tangle root is the
+  # live example - must still win, including in the per-case child the dispatcher
+  # re-runs the script in.
+  local tmp suite out rc distinct suite_root case_root
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-home-scrub-own.XXXXXX")
+  suite="$tmp/owned.test.sh"
+  cat >"$suite" <<SH
+#!/usr/bin/env bash
+set -u
+# shellcheck source=tests/lib.sh
+. "$ROOT/tests/lib.sh"
+if [ -z "\${FM_ROOT_OVERRIDE:-}" ]; then
+  FM_ROOT_OVERRIDE="\$(fm_test_tmproot fm-scrub-own-root)"
+  export FM_ROOT_OVERRIDE
+fi
+printf 'SUITE_FM_ROOT_OVERRIDE=[%s]\n' "\${FM_ROOT_OVERRIDE:-}"
+own_case() {
+  printf 'CASE_FM_ROOT_OVERRIDE=[%s]\n' "\${FM_ROOT_OVERRIDE:-}"
+  pass "case ran"
+}
+fm_test_run_cases own_case
+SH
+  chmod 0755 "$suite"
+
+  rc=0
+  out=$(env -u FM_TEST_CASE -u FM_TEST_HOME_SCRUB_DONE FM_HOME=/sentinel/home \
+    bash "$suite" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || { rm -rf "$tmp"; fail "self-defaulting suite failed (rc=$rc): $out"; }
+
+  suite_root=$(printf '%s\n' "$out" | grep -m1 '^SUITE_FM_ROOT_OVERRIDE=' || true)
+  case_root=$(printf '%s\n' "$out" | grep -m1 '^CASE_FM_ROOT_OVERRIDE=' || true)
+  [ -n "$suite_root" ] && [ "$suite_root" != 'SUITE_FM_ROOT_OVERRIDE=[]' ] \
+    || { rm -rf "$tmp"; fail "suite never set its own FM_ROOT_OVERRIDE: $out"; }
+  [ "${suite_root#SUITE_}" = "${case_root#CASE_}" ] \
+    || { rm -rf "$tmp"; fail "the case did not run under the suite's own home selection: $out"; }
+  # The dispatcher re-runs the script per case; a second scrub there would drop
+  # the suite's default and mint a different root instead of inheriting it.
+  distinct=$(printf '%s\n' "$out" | grep '^SUITE_FM_ROOT_OVERRIDE=' | LC_ALL=C sort -u | wc -l | tr -d ' ')
+  [ "$distinct" = 1 ] \
+    || { rm -rf "$tmp"; fail "per-case child re-scrubbed the suite's own home selection: $out"; }
+
+  rm -rf "$tmp"
+  pass "a home selection the suite sets for itself survives the ambient scrub"
 }
 
 test_case_bound_must_be_a_real_bound() {
@@ -783,5 +881,7 @@ test_portable_serial_shard_lane_refusals
 test_jobs_requires_proven_isolated
 test_jobs_parallel_scheduler_and_failure_propagation
 test_serial_run_scrubs_the_ambient_home_selection
+test_direct_invocation_scrubs_the_ambient_home_selection
+test_suite_owned_home_selection_survives_the_scrub
 test_case_bound_must_be_a_real_bound
 test_aggregate_json
