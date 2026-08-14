@@ -48,6 +48,9 @@ set -eu
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
 
+# shellcheck source=bin/fm-test-env-lib.sh
+. "$ROOT/bin/fm-test-env-lib.sh"
+
 JOBS=4
 JSON_PATH=
 LIST_ONLY=0
@@ -121,7 +124,8 @@ exclusion_reason() {
     fm-afk-pi-herdr-return-e2e.test.sh|\
     fm-codex-continuity-live-e2e.test.sh|fm-grok-continuity-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-primary-live-e2e.test.sh|\
-    fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh)
+    fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh|\
+    fm-sessionstart-instruction-refresh-live-e2e.test.sh)
       printf '%s\n' 'live harness opt-in; never default parallel CI'
       ;;
     fm-backend-autodetect-smoke.test.sh|fm-backend-herdr-eventwait-smoke.test.sh|\
@@ -424,8 +428,7 @@ for script in "${CANDIDATES[@]}"; do
     export TMPDIR="$work/tmp"
     export TMP="$work/tmp"
     # Clear ambient fleet overrides so candidates cannot share a live home.
-    unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
-      FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
+    fm_test_scrub_home_selection_env
     cd "$ROOT" || exit 1
     begin_ms=$(now_ms)
     bash "$script" >"$work/out/stdout" 2>"$work/out/stderr"

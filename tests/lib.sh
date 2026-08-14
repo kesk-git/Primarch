@@ -39,6 +39,31 @@ export FM_GATE_REFUSE_BYPASS=1
 # shellcheck disable=SC2034
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# --- ambient home selection -------------------------------------------------
+#
+# A case points at its fixture with FM_ROOT_OVERRIDE, but every script resolves
+# its home as "${FM_HOME:-${FM_ROOT_OVERRIDE:-...}}", so an ambient FM_HOME
+# OUTRANKS that override and the case silently asserts against the invoking
+# shell's home instead. Every firstmate session exports FM_HOME, so the guard
+# has to hold on the path people actually use when something is already wrong -
+# invoking one suite or one case directly to debug it - and not only under
+# bin/fm-test-run.sh, which scrubs the same list for its own children. The list
+# has one owner; see bin/fm-test-env-lib.sh.
+#
+# Only the AMBIENT inherited values are dropped, at source time, before any case
+# runs: whatever a suite or case sets for itself afterwards (tests/wake-helpers.sh's
+# FM_ROOT_OVERRIDE default, a per-case override) still wins. FM_TEST_HOME_SCRUB_DONE
+# is exported so this happens exactly once per process tree - fm_test_run_cases
+# re-runs the script per case, and a nested suite inherits its parent's world on
+# purpose, so re-scrubbing there would discard a deliberate selection rather
+# than an ambient one.
+# shellcheck source=bin/fm-test-env-lib.sh
+. "$ROOT/bin/fm-test-env-lib.sh"
+if [ -z "${FM_TEST_HOME_SCRUB_DONE:-}" ]; then
+  fm_test_scrub_home_selection_env
+  export FM_TEST_HOME_SCRUB_DONE=1
+fi
+
 # --- reporters --------------------------------------------------------------
 
 fail() {

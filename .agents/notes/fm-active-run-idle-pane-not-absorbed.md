@@ -43,8 +43,6 @@ They are recorded here because the fold should check they survived, not because 
   It therefore reads as a measured idle pane and is absorbed by the wedge guard exactly as a healthy quiet one is.
   The guard this task added refuses only an UNPROVEN pane; detecting an exited agent is the separately filed `fm-exited-agent-reads-working`.
 
-- Pending edit this task could not make itself, and the reason it is recorded here rather than done.
-  AGENTS.md line 344 still reads "Judge validation by the current-code-matched run step through `bin/fm-crew-state.sh`".
-  Under the attribution rule this task established, "current-code-matched" is no longer accurate: liveness is decided FIRST, and code identity only disambiguates FINISHED runs, so a live run the pipeline holds is attributed on branch alone even when its head is unresolvable in the crew worktree.
-  It should say the validation judgement comes from the run step `bin/fm-crew-state.sh` attributes to the crew, with code identity qualifying only a finished run.
-  Not edited here because a second firstmate lane held AGENTS.md exclusively while this task ran; `docs/architecture.md`'s equivalent sentence was corrected in this task's own diff.
+- AGENTS.md's validation-judgement sentence now matches the attribution rule this task established: liveness is decided FIRST, and code identity only disambiguates FINISHED runs.
+  This task could not make that edit itself because a second firstmate lane held AGENTS.md exclusively while it ran, so only `docs/architecture.md`'s equivalent sentence was corrected in its own diff; AGENTS.md caught up afterwards.
+  Nothing remains pending on that fact, and the fold only has to confirm both owners still agree.

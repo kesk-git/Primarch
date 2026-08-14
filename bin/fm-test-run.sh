@@ -73,6 +73,9 @@ set -eu
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
 
+# shellcheck source=bin/fm-test-env-lib.sh
+. "$ROOT/bin/fm-test-env-lib.sh"
+
 MODE=
 LIST_ONLY=0
 LIST_FAMILIES=0
@@ -135,6 +138,7 @@ family_for_basename() {
     fm-arm-pretool-check.test.sh|fm-ask-user-authority.test.sh|\
     fm-brief.test.sh|fm-vendor-auth-probe.test.sh|\
     fm-calm-pi-extension.test.sh|fm-cd-pretool-check.test.sh|\
+    fm-classify-decision-key.test.sh|\
     fm-composer-ghost.test.sh|fm-composer-lib.test.sh|\
     fm-crew-state.test.sh|fm-decision-hold-lifecycle.test.sh|\
     fm-documentation-audiences.test.sh|fm-ensure-agents-md.test.sh|fm-grok-harness.test.sh|\
@@ -152,7 +156,7 @@ family_for_basename() {
     fm-session-lock-ancestry.test.sh|\
     fm-supervision-events.test.sh|fm-turnend-guard.test.sh|fm-wake-daemon-lifecycle-e2e.test.sh|\
     fm-wake-queue.test.sh|fm-watch-arm.test.sh|fm-watch-checkpoint.test.sh|fm-watch-triage.test.sh|\
-    fm-watcher-lock.test.sh)
+    fm-watcher-lock.test.sh|fm-inactive-reconcile.test.sh)
       printf '%s\n' watcher-wake-lock
       ;;
     fm-afk-inject-herdr-e2e.test.sh|fm-afk-launch.test.sh|fm-backend-autodetect-smoke.test.sh|\
@@ -187,7 +191,7 @@ family_for_basename() {
     fm-muse-signals-live-e2e.test.sh|\
     fm-herdr-version-floor-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-primary-live-e2e.test.sh|\
-    fm-sessionstart-hook-live-e2e.test.sh|\
+    fm-sessionstart-hook-live-e2e.test.sh|fm-sessionstart-instruction-refresh-live-e2e.test.sh|\
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh)
       printf '%s\n' live-harness-optin
       ;;
@@ -424,6 +428,7 @@ tests/fm-send-secondmate-marker-herdr-e2e.test.sh 27
 tests/fm-send-secondmate-marker.test.sh 2136
 tests/fm-session-start.test.sh 37289
 tests/fm-sessionstart-nudge.test.sh 264
+tests/fm-sessionstart-instruction-refresh-live-e2e.test.sh 19
 tests/fm-shared-captain-inheritance.test.sh 3506
 tests/fm-spawn-dispatch-profile.test.sh 41351
 tests/fm-spawn-worktree-settle.test.sh 4598
@@ -851,6 +856,14 @@ families_for_changed_path() {
     bin/fm-test-run.sh|bin/fm-test-isolation-proof.sh)
       printf '%s\n' pure-contract-unit
       ;;
+    bin/fm-test-env-lib.sh)
+      # The home-selection scrub reaches every suite through tests/lib.sh, so it
+      # selects the same dependents that a change to that shared helper does,
+      # plus the runners' own contract coverage.
+      printf '%s\n' pure-contract-unit
+      families_for_test_reference lib.sh \
+        || printf '%s\n' "__unmapped__:$path"
+      ;;
     bin/backends/herdr*|bin/fm-herdr-lab.sh|tests/herdr-test-safety.sh)
       printf '%s\n' real-herdr-gated
       printf '%s\n' backend-dispatch
@@ -877,7 +890,7 @@ families_for_changed_path() {
       printf '%s\n' backend-dispatch
       printf '%s\n' real-herdr-gated
       ;;
-    bin/fm-watch*|bin/fm-wake*|\
+    bin/fm-watch*|bin/fm-wake*|bin/fm-inactive-reconcile.sh|\
     bin/fm-classify-lib.sh|bin/fm-daemon*|bin/fm-turnend-guard*|bin/fm-guard.sh)
       printf '%s\n' watcher-wake-lock
       ;;
@@ -1538,7 +1551,18 @@ run_one_serial() {
   set +e
   # Stream live output while retaining a copy for gate-skip detection.
   # PIPESTATUS[0] is the test script; tee's exit is ignored for aggregate.
-  bash "$script" 2>&1 | tee "$out"
+  # The home-selection environment is scrubbed here for the same reason the
+  # parallel worker below scrubs it: a case that points at its fixture with
+  # FM_ROOT_OVERRIDE is silently outranked by an ambient FM_HOME, because every
+  # script resolves FM_HOME first ("${FM_HOME:-${FM_ROOT_OVERRIDE:-...}}"). Every
+  # firstmate session exports FM_HOME, so without this a serial run asserts
+  # against the developer's REAL home instead of the fixture, and the same suite
+  # passes or fails depending only on which lane ran it. The list itself lives in
+  # bin/fm-test-env-lib.sh so the two lanes cannot drift apart again.
+  (
+    fm_test_scrub_home_selection_env
+    bash "$script" 2>&1
+  ) | tee "$out"
   rc=${PIPESTATUS[0]}
   set -e
   : "${rc:=1}"
@@ -1641,8 +1665,7 @@ else
       set +e
       export TMPDIR="$work/tmp"
       export TMP="$work/tmp"
-      unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
-        FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
+      fm_test_scrub_home_selection_env
       cd "$ROOT" || exit 1
       begin_ms=$(now_ms)
       bash "$script" >"$work/output" 2>&1
