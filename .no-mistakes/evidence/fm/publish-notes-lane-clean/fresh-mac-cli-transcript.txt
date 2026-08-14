@@ -1,0 +1,135 @@
+# Fresh Mac, no firstmate checkout, no FM_HOME.
+# Skill installed only at ~/.claude/skills/firstmate-notes (installer-fetched).
+# Project under test: a plain git repo at $PROJ
+
+$ ~/.claude/skills/firstmate-notes/fm-notes.sh path fix-login-redirect
+$PROJ/.agents/notes/fix-login-redirect.md
+[exit 0]
+
+$ cd src/deep && ~/.claude/skills/firstmate-notes/fm-notes.sh new fix-login-redirect
+$PROJ/.agents/notes/fix-login-redirect.md
+[exit 0]
+
+$ cat .agents/notes/fix-login-redirect.md
+# Task notes: fix-login-redirect
+
+Durable project-intrinsic knowledge this task produced.
+The fold routes each fact below into the destination document and then retires this file.
+Keep the bar high: knowledge useful to almost every future session, and a pointer to the authoritative file or command rather than detail the code already shows.
+
+## Destination
+
+AGENTS.md
+
+## Notes
+
+[exit 0]
+
+$ ~/.claude/skills/firstmate-notes/fm-notes.sh new add-billing-webhook
+$PROJ/.agents/notes/add-billing-webhook.md
+[exit 0]
+
+$ ~/.claude/skills/firstmate-notes/fm-notes.sh list
+add-billing-webhook	$PROJ/.agents/notes/add-billing-webhook.md
+fix-login-redirect	$PROJ/.agents/notes/fix-login-redirect.md
+[exit 0]
+
+$ ~/.claude/skills/firstmate-notes/fm-notes.sh count
+2
+[exit 0]
+
+# scan, explicit-directory form documented in SKILL.md for a machine with no firstmate home
+$ ~/.claude/skills/firstmate-notes/fm-notes.sh scan $PROJ
+unfolded: fresh-mac-project.XsyV7Z: 2 note(s) in $PROJ/.agents/notes
+    add-billing-webhook
+    fix-login-redirect
+2 note(s) waiting to be folded; fold them per the firstmate-notes skill
+[exit 3]
+
+# same repo named twice (root and a subdirectory) is still one root
+$ ~/.claude/skills/firstmate-notes/fm-notes.sh scan $PROJ $PROJ/src/deep
+unfolded: fresh-mac-project.XsyV7Z: 2 note(s) in $PROJ/.agents/notes
+    add-billing-webhook
+    fix-login-redirect
+2 note(s) waiting to be folded; fold them per the firstmate-notes skill
+[exit 3]
+
+# a path it cannot read is reported, never counted as a clear lane
+$ ~/.claude/skills/firstmate-notes/fm-notes.sh scan $PROJ /nope/typo-path
+error: not a directory: /nope/typo-path
+[exit 1]
+
+$ ~/.claude/skills/firstmate-notes/fm-notes.sh retire fix-login-redirect nope-not-a-note
+error: no pending note for task id: nope-not-a-note
+[exit 1]
+
+$ ~/.claude/skills/firstmate-notes/fm-notes.sh list
+add-billing-webhook	$PROJ/.agents/notes/add-billing-webhook.md
+fix-login-redirect	$PROJ/.agents/notes/fix-login-redirect.md
+[exit 0]
+
+$ ~/.claude/skills/firstmate-notes/fm-notes.sh retire fix-login-redirect add-billing-webhook
+retired: fix-login-redirect
+retired: add-billing-webhook
+[exit 0]
+
+# lane clear -> exit 0
+$ ~/.claude/skills/firstmate-notes/fm-notes.sh scan $PROJ
+[exit 0]
+
+$ ~/.claude/skills/firstmate-notes/fm-notes.sh ../escape
+error: unknown command: ../escape
+Own the per-task project-note lane: where a crewmate records durable
+project-intrinsic knowledge, and how that knowledge later reaches the
+project's shared documents.
+
+Why the lane exists: a shared document edited by every task in its own branch
+is a guaranteed same-repo collision, and it is the worst kind, because two
+agents' contradictory prose merges without failing and the file quietly ends
+up saying two things. So an ordinary task writes only its own note at
+.agents/notes/<task-id>.md - a path no other task can hold - and a single fold
+pass folds every pending note into AGENTS.md (or the document a note names)
+and retires it.
+
+Usage: fm-notes.sh <command> [args] [--dir <project-dir>]
+  path <task-id>        print the canonical note path (never touches disk)
+  new <task-id>         create the note from a template when absent, then
+                        print its path; re-running is a no-op, so a task that
+                        learns more can append to the same file
+  list [--ids]          print "<task-id><TAB><path>" per pending note, or bare
+                        ids with --ids; prints nothing when the lane is empty
+  count                 print the number of pending notes
+  retire <task-id>...   delete exactly the named notes after folding them, and
+                        print one "retired: <task-id>" line each; refuses an id
+                        with no note so a typo cannot silently retire nothing
+  scan [<dir>...]       report every repo holding unfolded notes (see below)
+
+--dir defaults to the current directory and is resolved to the enclosing git
+worktree root when there is one, so a crewmate can run these from anywhere in
+its tree.
+
+A pending note is a note that exists: retiring is what marks one folded, and
+nothing else records fold state. That is deliberate. An unfolded note stays on
+the default branch, keeps being counted by `scan`, and folds correctly whenever
+the fold finally runs, so a fold that is late, skipped, or failed loses nothing
+and stays visible. Git history keeps a retired note recoverable.
+
+scan is the loud counter. With explicit directories it scans exactly those,
+each resolved to its enclosing worktree root like --dir, and a repo named more
+than once - as itself and as one of its own subdirectories, say - is one root
+to scan, counted and printed once. With none it needs
+FM_HOME and scans that home's projects/* clones AND FM_HOME itself, because a
+firstmate home IS a firstmate checkout: the firstmate repo is never under
+projects/, so anything that iterates only projects/ silently skips the one repo
+its own crewmates work in most. It prints one line per repo holding notes and a
+summary. Three outcomes, three exit codes, so it can be used as a mechanical
+check: 3 when any note is pending, 0 when every scanned repo is clear, and 1
+when a named directory cannot be read - an unreadable path is reported, never
+counted as nothing found, which would be indistinguishable from a clear lane.
+
+Every id is matched exactly, never by glob or prefix. An earlier design keyed
+on a "<name>-*" glob and a project named `web` collided with a live `web-api`;
+nothing here matches by prefix, and ids are restricted to [A-Za-z0-9._-] with
+no leading dot, because they become paths.
+[exit 1]
+

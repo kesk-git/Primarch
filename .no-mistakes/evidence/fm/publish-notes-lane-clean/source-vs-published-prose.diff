@@ -1,0 +1,70 @@
+# What the published skill says where the source said something fleet-internal
+# or captain-private. Source: ~/.claude/skills/firstmate-notes (read-only, untouched).
+# Published: skills/firstmate-notes at the branch tip.
+
+===== SKILL.md =====
+--- /Users/kesk/.claude/skills/firstmate-notes/SKILL.md	2026-08-08 10:47:36
++++ /Users/kesk/.no-mistakes/worktrees/b779750df000/01M00V8KJK8N7052NHVQ4J4RYY/skills/firstmate-notes/SKILL.md	2026-08-14 22:59:07
+@@ -11,6 +11,8 @@
+ 
+ The script beside this file, `fm-notes.sh`, owns the mechanics. Run `fm-notes.sh --help` for exact commands; this file owns when and why.
+ 
++The command blocks below spell out the user-level install location, `~/.claude/skills/firstmate-notes/`, which is where this skill expects to live. If your installer placed it somewhere else, such as a project-level `.claude/skills/`, run the same scripts from that directory instead.
++
+ ## When to load this
+ 
+ - Before writing a crewmate ship brief, so the brief carries the note instruction instead of "update `AGENTS.md`".
+@@ -33,10 +35,10 @@
+ 
+ ## The fold
+ 
+-The fold is the only writer of the shared documents. Run it as an ordinary ship task on the project, dispatched by firstmate like any other:
++The fold is the only writer of the shared documents. Run it as an ordinary ship task on the project, dispatched like any other:
+ 
+ 1. `fm-notes.sh list` - what is pending. Nothing pending means there is nothing to do; stop without a PR.
+-2. `fm-ensure-agents-md.sh .` (from the firstmate repo's `bin/`) so `AGENTS.md` exists, `CLAUDE.md` links to it, and it carries its `## Maintaining this file` section. This belongs to the fold for the same reason the edits do: creating that file from N branches collides exactly the way editing it from N branches does.
++2. `fm-ensure-agents-md.sh .` so `AGENTS.md` exists, `CLAUDE.md` links to it, and it carries its `## Maintaining this file` section. That script lives in the firstmate repo's `bin/` and does not ship with this skill; run it if you have firstmate checked out. Without it, ensure `AGENTS.md` exists by whatever means your own project already uses, then continue. This belongs to the fold for the same reason the edits do: creating that file from N branches collides exactly the way editing it from N branches does.
+ 3. Read every pending note and route each fact into the document its `## Destination` names, defaulting to `AGENTS.md`. Apply that document's own bar, and rewrite or prune an existing entry rather than appending a new one.
+ 4. Drop a fact that is stale, already recorded, or already visible in the code - and say which in the PR body. A dropped fact is a decision you record, not an omission.
+ 5. `fm-notes.sh retire <task-id>...` for exactly the notes you folded.
+@@ -49,26 +51,26 @@
+ An unfolded note is invisible in every diff, so this check is the only thing between a skipped fold and knowledge that silently stops shipping:
+ 
+ ```sh
++# With a firstmate home: scans that home's projects/* clones and the home itself.
+ FM_HOME=<home> ~/.claude/skills/firstmate-notes/fm-notes.sh scan
++# With no firstmate home (a fresh machine, this skill installed on its own): name the repos to scan.
++~/.claude/skills/firstmate-notes/fm-notes.sh scan <dir>...
+ ```
+ 
+-It scans that home's `projects/*` clones **and `FM_HOME` itself**, because a firstmate home is a firstmate checkout and the firstmate repo is never under `projects/` - anything that iterates only `projects/` silently skips the repo its own crewmates work in most. It exits `3` when anything is pending and `0` when the lane is clear, so it works as a mechanical check rather than something to eyeball.
++Only the list of repos differs. Either way, `scan` counts the pending notes in each repo on that list, prints a line for every repo holding any, and exits `3` when the total is above zero and `0` when it is zero - so both forms work as a mechanical check rather than something to eyeball. A directory you name is resolved to its enclosing worktree root, and one that cannot be read is reported and exits `1`: three outcomes, three exit codes, because a path it could not look at must never be reported as nothing found. `FM_HOME`'s list is that home's `projects/*` clones **and `FM_HOME` itself**, because a firstmate home is a firstmate checkout and the firstmate repo is never under `projects/` - anything that iterates only `projects/` silently skips the repo its own crewmates work in most.
+ 
+-## Why this exists, measured
++## Why this exists
+ 
+-Across 62 merged PRs in two projects, only **36 of 1,219 same-repo pairs (3.0%)** touched disjoint files - so almost no two tasks in one repo could ever have run safely in parallel. The cause was not the code: 60 of those 62 merges touched `AGENTS.md`, and four shared documents (`AGENTS.md`, `README.md`, `docs/*.md`, `retro/*`) accounted for essentially all of it.
+-
+-Re-scoring the same corpus with those files out of the task branches: **3.0% → 31.5%** from moving agent memory alone, and **51.7%** once a project also routes its own housekeeping prose through the lane. That is a 10.7x and 17.9x increase in the number of pairs that could have run concurrently.
+-
++Shared documents are where same-repo parallel work collides, and the collision is silent because contradictory prose merges cleanly.
+ No predictor can recover that; only the convention can.
+ 
+ ## What this cannot do - read this before relying on it
+ 
+ **It cannot enforce anything at the moment of the mistake.** This is a convention plus a script, not a gate. Nothing stops a crewmate editing `AGENTS.md` in its own branch; the collision will simply happen as before. The mechanical parts are only these: `fm-notes.sh` refuses an unsafe or unknown id, `retire` validates every id before deleting any so a partial fold cannot silently drop a note, and `scan` finds what nothing folded. Everything else depends on the brief actually carrying the instruction.
+ 
+-**A skill is inert unless something loads it.** This one is user-level, so it survives firstmate updates, but nothing triggers it automatically - firstmate carries the reminder in its own local memory, which is gitignored and read at session start.
++**A skill is inert unless something loads it.** This one is user-level, so it survives ordinary updates to whatever installed it, but nothing triggers it automatically - the agent using it has to carry its own reminder to load it, in whatever durable memory it keeps across sessions, and act on that reminder at the start of its work.
+ 
+-**The fold is not mechanically serialized.** An earlier in-repo version refused to allocate a second concurrent fold; that hook lived in the firstmate repo and is gone. Two concurrent folds would conflict on `AGENTS.md` - loud at merge, not silent - and no note is lost, since each retires only what it folded. Dispatch one fold per project at a time.
++**The fold is not mechanically serialized.** Two concurrent folds would conflict on `AGENTS.md` - loud at merge, not silent - and no note is lost, since each retires only what it folded. Dispatch one fold per project at a time.
+ 
+ **Ids are matched exactly, never by prefix.** An earlier design keyed on a `<name>-*` glob, so a live `web-api` fold blocked `web`. Nothing here globs.
+ 
+
+===== published frontmatter (the installed skill name must not change) =====
+---
+name: firstmate-notes
+description: Keep per-task housekeeping writes out of parallel branches so two tasks in one repo stop colliding on prose. Load BEFORE writing a crewmate ship brief, BEFORE recording durable project knowledge in a project's AGENTS.md/README/docs, and BEFORE folding pending notes. Covers the per-task note path, the fold procedure, and `fm-notes.sh scan`, which finds notes nothing has folded.
+---

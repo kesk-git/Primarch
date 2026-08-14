@@ -1,0 +1,16 @@
+ok - two same-repo tasks merge cleanly and the fold still lands both facts
+ok - each task id owns a distinct note path
+ok - path prints the note location without writing
+ok - new is idempotent and never clobbers an existing note
+ok - notes land at the worktree root from any subdirectory
+ok - retire refuses an unknown id and deletes nothing
+ok - retire clears exactly the named notes and leaves the rest pending
+ok - unsafe task ids are refused before touching disk
+ok - scan is loud with pending notes and silent once folded
+ok - scan reports a target it cannot read instead of a clear lane
+ok - scan resolves a subdirectory to its worktree root instead of reporting clean
+ok - one repo counts and prints once however many of its paths are named
+ok - scan covers the firstmate home itself as well as projects/ clones
+ok - an id that is a prefix of another never collides with it
+all tests passed
+exit: 0

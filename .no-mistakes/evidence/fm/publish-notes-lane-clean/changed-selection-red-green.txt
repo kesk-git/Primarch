@@ -1,0 +1,23 @@
+OBJECT UNDER TEST: bin/fm-test-run.sh --changed on a repo whose only change is
+under top-level skills/ - the shape of this branch own new files, and the first
+public skill to ship executable scripts rather than prose alone.
+
+### BEFORE the fix (base commit)  (bin/fm-test-run.sh taken from 21256c1)
+$ git diff --name-only HEAD
+  skills/example/SKILL.md
+  skills/example/test/run.sh
+$ bin/fm-test-run.sh --list --changed --base HEAD
+  fm-test-run: no changed-test mapping for source path: skills/example/SKILL.md
+  [exit 2]
+
+### AFTER the fix (branch tip)  (bin/fm-test-run.sh taken from 3634974)
+$ git diff --name-only HEAD
+  skills/example/SKILL.md
+  skills/example/test/run.sh
+$ bin/fm-test-run.sh --list --changed --base HEAD
+  fm-test-run: no tests selected for changes vs HEAD (map is conservative; use --all for the complete suite)
+  [exit 0]
+
+Red: selection failed closed on exit 2 and ran nothing at all - the failure that
+took --changed down on this task own files. Green: exit 0 with no suite selected,
+which is correct - a public skill carries self-contained tests, run directly.

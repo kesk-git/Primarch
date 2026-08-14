@@ -1,0 +1,53 @@
+OBJECT UNDER TEST: no commit and no tracked file on fm/publish-notes-lane-clean
+carries the source skill's captain-private figures.
+
+=== Forbidden terms (verbatim from the excluded source section) ===
+  62 merged PRs
+  36 of 1,219
+  1,219
+  same-repo pairs
+  3.0%
+  31.5%
+  51.7%
+  10.7x
+  17.9x
+  60 of those 62
+  Re-scoring the same corpus
+
+=== Seeded-positive control: identical sweep over a commit that DOES carry them ===
+  control commit hits: 12  (0 here would mean the sweep proves nothing)
+    HIT: HEAD:seeded.md:3:Across 62 merged PRs in two projects, only **36 of 1,219 same-repo pairs (3.0%)** touched disjoint file
+    HIT: HEAD:seeded.md:5:Re-scoring the same corpus with those files out of the task branches: **3.0% → 31.5%** from moving agen
+
+=== Per-commit sweep, every commit on the branch ===
+  3634974  hits: 0  no-mistakes(review): scan each resolved root once; state divergence by kind
+  eb1a195  hits: 0  no-mistakes(review): make scan report unreadable targets instead of clean
+  7240b64  hits: 0  no-mistakes(review): state scan exit contract for both invocation forms
+  c9b6c45  hits: 0  no-mistakes(review): lint published skill scripts and document standalone scan form
+  10fd901  hits: 0  feat(skills): publish the note-lane skill as public skills/firstmate-notes
+  TOTAL forbidden hits across all branch commits: 0
+
+=== Pickaxe over the tip's whole reachable history (was any term ever introduced?) ===
+  62 merged PRs                never introduced
+  36 of 1,219                  never introduced
+  1,219                        never introduced
+  same-repo pairs              never introduced
+  3.0%                         never introduced
+  31.5%                        never introduced
+  51.7%                        never introduced
+  10.7x                        never introduced
+  17.9x                        never introduced
+  60 of those 62               never introduced
+  Re-scoring the same corpus   never introduced
+
+=== Softened/approximated numbers? Every number-bearing line in the files this branch adds or edits ===
+  README.md:4:    href="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue?style=flat-square"
+  README.md:7:      src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue?style=flat-square"
+  README.md:24:  <img alt="firstmate - talk to one agent, ship with a crew" src="assets/banner.png" width="100%" />
+  (nothing above = no percentage, multiplier, PR count, or corpus reference anywhere in the branch's files)
+
+=== The one place the excluded section is referenced at all ===
+  3634974109663fa088fcdbb934e72ce945d21d79:.agents/notes/fm-publish-notes-lane-skill.md:14:- Scoping this publish required trimming `~/.claude/skills/firstmate-notes/SKILL.md`'s "Why this exists, meas
+  ^ names the excluded section and the ruling authority, carries none of its content.
+
+RESULT: CLEAN - the sweep detects the material (control) and finds it in no commit and no tracked file.
