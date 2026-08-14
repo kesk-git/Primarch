@@ -851,13 +851,20 @@ fm_lock_try_acquire() {
 }
 
 # Blocks until the lock is held. Waiting is only honest while the lock CAN be
-# taken: an unusable lock root never yields one, so this returns non-zero and
-# lets the caller take its existing failure path instead of blocking forever.
-# Contention is still waited out indefinitely, unchanged.
+# taken: an unusable lock root never yields one, and neither does a lock this
+# very process already holds - the only shell that could release it is the one
+# blocked here. Both return non-zero so the caller takes its existing failure
+# path instead of blocking forever. A signal trap is how the second case
+# arrives: traps run between commands, so a TERM taken inside a marker's
+# critical section leaves that lock held and jumps to a cleanup path that
+# acquires it again. Contention with any OTHER holder is still waited out
+# indefinitely, unchanged.
 fm_lock_acquire_wait() {
-  local lockdir=$1
+  local lockdir=$1 self
+  self=${BASHPID:-$$}
   while ! fm_lock_try_acquire "$lockdir"; do
     [ "$FM_LOCK_ROOT_UNUSABLE" -eq 1 ] && return 1
+    [ "${FM_LOCK_HELD_PID:-}" = "$self" ] && return 1
     sleep 0.1
   done
 }

@@ -110,7 +110,10 @@ init_changed_fixture_repo() {
     fm-bearings-snapshot.test.sh \
     fm-backend-cmux.test.sh \
     fm-backend-zellij.test.sh \
-    fm-backend-orca.test.sh; do
+    fm-backend-orca.test.sh \
+    fm-task-delivery.test.sh \
+    fm-bootstrap.test.sh \
+    fm-fleet-sync.test.sh; do
     printf '#!/usr/bin/env bash\n# tests/lib.sh\n' >"$repo/tests/$script"
     chmod +x "$repo/tests/$script"
   done
@@ -121,7 +124,10 @@ init_changed_fixture_repo() {
   printf '# .claude/settings.json\n# .pi/extensions/fm-primary-turnend-guard.ts\n' \
     >>"$repo/tests/fm-cd-pretool-check.test.sh"
   printf '# .pi/extensions/fm-primary-pi-watch.ts\n' >>"$repo/tests/fm-pi-watch-extension.test.sh"
-  mkdir -p "$repo/.agents/skills/example" "$repo/.claude" "$repo/.pi/extensions" "$repo/src"
+  mkdir -p "$repo/.agents/skills/example" "$repo/.agents/notes" "$repo/.claude" \
+    "$repo/.pi/extensions" "$repo/src"
+  : >"$repo/.agents/notes/example.md"
+  : >"$repo/bin/fm-project-mode.sh"
   : >"$repo/.agents/skills/example/SKILL.md"
   : >"$repo/.claude/settings.json"
   : >"$repo/.pi/extensions/fm-primary-pi-watch.ts"
@@ -181,6 +187,44 @@ test_changed_dependency_selection_and_unmapped_failure() {
     || fail "unmapped changed source failure is not actionable: $(cat "$tmp/err")"
   rm -rf "$tmp"
   pass "changed selection covers dependents and fails closed for unmapped source"
+}
+
+# Two mappings that exist because their absence broke something, so both are
+# pinned here. A per-task notes file has no consuming suite: it must select
+# nothing and succeed, not fail selection closed the way an unmapped source does
+# (that shape is the one asserted above, and it took `--changed` down for a whole
+# branch). The registry parser owns contracts read outside its own family - the
+# --lint rows bootstrap formats and the registry-invalid marker fleet sync selects
+# on - so it must pull in session-bootstrap too, or a parser change ships green
+# while the diagnostics that consume it go quiet.
+test_changed_selection_maps_notes_and_registry_parser() {
+  local tmp repo listed rc
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-mapping.XXXXXX")
+  repo="$tmp/repo"
+  init_changed_fixture_repo "$repo"
+
+  printf '\n' >>"$repo/.agents/notes/example.md"
+  set +e
+  (cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD) >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] \
+    || fail "a changed notes file must not fail selection, got exit $rc: $(cat "$tmp/err")"
+  [ ! -s "$tmp/out" ] \
+    || fail "a changed notes file must select no suite, got: $(cat "$tmp/out")"
+  git -C "$repo" add .agents
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm notes-change
+
+  printf '\n' >>"$repo/bin/fm-project-mode.sh"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
+  assert_contains "$listed" "tests/fm-task-delivery.test.sh" \
+    "registry parser selects its own contract coverage"
+  assert_contains "$listed" "tests/fm-bootstrap.test.sh" \
+    "registry parser selects the session-start lint coverage that consumes --lint"
+  assert_contains "$listed" "tests/fm-fleet-sync.test.sh" \
+    "registry parser selects the fleet-sync coverage that consumes its marker"
+  rm -rf "$tmp"
+  pass "changed selection maps a notes file to no suite and the registry parser to both consuming families"
 }
 
 test_empty_selection_emits_summary() {
@@ -869,6 +913,7 @@ test_family_selection
 test_single_script_selection
 test_changed_file_selection_is_conservative
 test_changed_dependency_selection_and_unmapped_failure
+test_changed_selection_maps_notes_and_registry_parser
 test_empty_selection_emits_summary
 test_timing_markers_and_json
 test_aggregate_exit_behavior

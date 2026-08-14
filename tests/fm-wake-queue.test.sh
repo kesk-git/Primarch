@@ -605,22 +605,48 @@ SH
 
 test_interruption_before_and_after_raw_commit() {
   local dir state before_out after_out replay_out empty_out pid rc count i sequence generation
+  local sleepbin real_sleep parked
   dir=$(make_case interruption)
   state="$dir/state"
   before_out="$dir/before.out"
   after_out="$dir/after.out"
   replay_out="$dir/replay.out"
   empty_out="$dir/empty.out"
+  sleepbin="$dir/sleepbin"
+  parked="$dir/precommit-parked"
   printf 'done: interruption fixture\n' > "$state/task.status"
   append_wake "$state" signal task.status "signal: task" || fail "pre-commit interruption wake append failed"
 
-  FM_STATE_OVERRIDE="$state" FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT=5 "$DRAIN" > "$before_out" &
+  # Deliver the signal exactly where the pre-commit delay parks the drain, which
+  # is the boundary this case is about. The lock directory appears the instant
+  # the drain takes it, many command substitutions earlier, and a signal that
+  # lands while bash is parsing one of those substitutions is reported as a trap
+  # syntax error and dropped - the drain then runs to completion and exits 0,
+  # which is exactly how this case failed in CI. Parked, the shell is waiting on
+  # a foreground child, so the trap is guaranteed to run once that child exits.
+  # The stub only announces the parked window and always runs the real sleep, so
+  # the drain's own timing is unchanged.
+  mkdir -p "$sleepbin"
+  real_sleep=$(command -v sleep) || fail "could not locate sleep for the interruption fixture"
+  cat > "$sleepbin/sleep" <<'SH'
+#!/usr/bin/env bash
+if [ -n "${FM_TEST_PARK_SECONDS:-}" ] && [ "${1:-}" = "$FM_TEST_PARK_SECONDS" ]; then
+  : > "$FM_TEST_PARK_MARKER"
+fi
+exec "$FM_TEST_REAL_SLEEP" "$@"
+SH
+  chmod +x "$sleepbin/sleep"
+
+  PATH="$sleepbin:$PATH" FM_TEST_REAL_SLEEP="$real_sleep" FM_TEST_PARK_SECONDS=5 \
+    FM_TEST_PARK_MARKER="$parked" \
+    FM_STATE_OVERRIDE="$state" FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT=5 "$DRAIN" > "$before_out" &
   pid=$!
   i=0
-  while [ "$i" -lt 100 ] && [ ! -e "$state/.wake-queue.lock" ]; do
+  while [ "$i" -lt 200 ] && [ ! -e "$parked" ]; do
     sleep 0.05
     i=$((i + 1))
   done
+  [ -e "$parked" ] || { kill "$pid" 2>/dev/null || true; fail "pre-commit drain never parked before raw commitment"; }
   [ -e "$state/.wake-queue.lock" ] || { kill "$pid" 2>/dev/null || true; fail "pre-commit drain never entered its serialized read boundary"; }
   kill -TERM "$pid" 2>/dev/null || fail "could not interrupt drain before raw commitment"
   set +e
