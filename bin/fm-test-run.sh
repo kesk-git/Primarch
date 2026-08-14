@@ -1540,7 +1540,18 @@ run_one_serial() {
   set +e
   # Stream live output while retaining a copy for gate-skip detection.
   # PIPESTATUS[0] is the test script; tee's exit is ignored for aggregate.
-  bash "$script" 2>&1 | tee "$out"
+  # The home-selection environment is scrubbed here for the same reason the
+  # parallel worker below scrubs it: a case that points at its fixture with
+  # FM_ROOT_OVERRIDE is silently outranked by an ambient FM_HOME, because every
+  # script resolves FM_HOME first ("${FM_HOME:-${FM_ROOT_OVERRIDE:-...}}"). Every
+  # firstmate session exports FM_HOME, so without this a serial run asserts
+  # against the developer's REAL home instead of the fixture, and the same suite
+  # passes or fails depending only on which lane ran it.
+  (
+    unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
+      FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
+    bash "$script" 2>&1
+  ) | tee "$out"
   rc=${PIPESTATUS[0]}
   set -e
   : "${rc:=1}"

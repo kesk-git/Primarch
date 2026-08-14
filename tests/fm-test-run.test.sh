@@ -627,6 +627,62 @@ SH
   pass "jobs scheduler runs proven scripts; failure propagates; non-proven refused"
 }
 
+test_serial_run_scrubs_the_ambient_home_selection() {
+  # A case points at its fixture with FM_ROOT_OVERRIDE, but every script resolves
+  # the home as "${FM_HOME:-${FM_ROOT_OVERRIDE:-...}}", so an ambient FM_HOME
+  # silently OUTRANKS that override and the case asserts against the real home
+  # instead. Every firstmate session exports FM_HOME, so a serial run started
+  # from one used to answer a different question than the same suite run in
+  # parallel, which already scrubbed these. The verdict must not depend on which
+  # lane ran it.
+  local tmp repo runner fixture out rc
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-home-scrub.XXXXXX")
+  repo="$tmp/repo"
+  runner="$repo/bin/fm-test-run.sh"
+  fixture=tests/fm-lint.test.sh
+  mkdir -p "$repo/bin" "$repo/tests"
+  cp "$RUNNER" "$runner"
+  # The fixture reports what it actually inherited, so the assertion reads the
+  # child's real environment rather than the parent's intent.
+  cat >"$repo/$fixture" <<'SH'
+#!/usr/bin/env bash
+printf 'SAW_FM_HOME=[%s]\n' "${FM_HOME:-}"
+printf 'SAW_FM_CONFIG_OVERRIDE=[%s]\n' "${FM_CONFIG_OVERRIDE:-}"
+printf 'SAW_FM_STATE_OVERRIDE=[%s]\n' "${FM_STATE_OVERRIDE:-}"
+echo "ok - fixture ran"
+SH
+  chmod +x "$runner" "$repo/$fixture"
+
+  # Guard against a vacuous pass: if the sentinels never reached the runner at
+  # all, a scrubbed child would prove nothing. Assert the parent really exports
+  # them before asserting the child does not see them.
+  [ "$(FM_HOME=/sentinel/home bash -c 'printf %s "$FM_HOME"')" = /sentinel/home ] \
+    || { rm -rf "$tmp"; fail "sentinel export did not take effect; the case would be vacuous"; }
+
+  set +e
+  out=$(cd "$repo" && FM_HOME=/sentinel/home FM_CONFIG_OVERRIDE=/sentinel/config \
+    FM_STATE_OVERRIDE=/sentinel/state "$runner" "$fixture" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { rm -rf "$tmp"; fail "serial fixture run failed: $out"; }
+
+  case "$out" in
+    *'SAW_FM_HOME=[]'*) ;;
+    *) rm -rf "$tmp"; fail "serial run leaked the ambient FM_HOME into the test: $out" ;;
+  esac
+  case "$out" in
+    *'SAW_FM_CONFIG_OVERRIDE=[]'*) ;;
+    *) rm -rf "$tmp"; fail "serial run leaked FM_CONFIG_OVERRIDE into the test: $out" ;;
+  esac
+  case "$out" in
+    *'SAW_FM_STATE_OVERRIDE=[]'*) ;;
+    *) rm -rf "$tmp"; fail "serial run leaked FM_STATE_OVERRIDE into the test: $out" ;;
+  esac
+
+  rm -rf "$tmp"
+  pass "serial run scrubs the ambient home selection like the parallel path"
+}
+
 test_case_bound_must_be_a_real_bound() {
   local tmp suite out rc
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-case-bound.XXXXXX")
@@ -726,5 +782,6 @@ test_portable_serial_shards_partition_the_serial_lane
 test_portable_serial_shard_lane_refusals
 test_jobs_requires_proven_isolated
 test_jobs_parallel_scheduler_and_failure_propagation
+test_serial_run_scrubs_the_ambient_home_selection
 test_case_bound_must_be_a_real_bound
 test_aggregate_json
