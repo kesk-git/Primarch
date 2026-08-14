@@ -1279,6 +1279,9 @@ fm_wake_print_annotations() {  # <deduped-raw-rows> [<presentation-snapshot>]
     if [ "$mode" = historical ] && fm_wake_signal_seen_current "$STATE" "$path"; then
       continue
     fi
+    # A queued row can outlive its status file (teardown removes it while the
+    # durable wake is still unacknowledged), so an unresolvable cursor skips
+    # only this row's annotation and never the whole presentation.
     offset=$(fm_wake_status_cursor_offset "$path") || continue
     endpoint=
     if [ -n "$snapshot" ]; then

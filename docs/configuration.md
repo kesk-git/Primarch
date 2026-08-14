@@ -133,8 +133,9 @@ See [`trace-context.md`](trace-context.md) for carrier semantics, supported rout
 
 ## Gate defaults (.no-mistakes.yaml)
 
-The tracked `.no-mistakes.yaml` keeps test evidence outside the repo and pins `commands.lint` to `bin/fm-lint.sh` so local lint matches CI.
-That evidence policy is specific to the firstmate repo: target projects may legitimately commit `.no-mistakes/evidence/` from their own no-mistakes pipeline, but firstmate keeps `.no-mistakes/` local and CI rejects tracked entries under that path.
+The tracked `.no-mistakes.yaml` sets `test.evidence.store_in_repo: true`, so the gate's Test step keeps its evidence artifacts in the repo and commits them alongside the change instead of leaving them in a temp directory, and it pins `commands.lint` to `bin/fm-lint.sh` so local lint matches CI.
+The rest of `.no-mistakes/` is captain-private local gate state and stays gitignored.
+That ignore rule and CI's personal-fleet-path check still cover the whole `.no-mistakes/` path, so any evidence the gate does commit under it has to be reconciled with both before such a branch can pass CI.
 It does not set `commands.test` to a complete `tests/*.test.sh` walk.
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for the firstmate-specific local test policy and entry points.
 Portable shard evidence and coverage rules are in [fm-test-portable-shards.md](fm-test-portable-shards.md); [herdr-backend.md](herdr-backend.md#destructive-lab-safety) owns the real-Herdr lane's isolation boundary, and [runtime-backends.md](verification/runtime-backends.md#herdr) owns active evidence.
