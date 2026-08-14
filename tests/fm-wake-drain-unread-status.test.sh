@@ -288,6 +288,58 @@ test_empty_queue_does_not_swallow_later_signal_annotation() {
   pass "an empty-queue drain preserves routine status for a later signal annotation"
 }
 
+test_queued_wake_for_removed_status_file_still_presents_other_tasks() {
+  local dir state out err
+  dir=$(make_case stale-queue-row)
+  state="$dir/state"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+  printf 'needs-decision [key=pick-transport]: REST or RPC for the sync endpoint\n' > "$state/decider.status"
+  printf 'note: decider also left an unread note\n' >> "$state/decider.status"
+  printf 'note: retired task said something\n' > "$state/retired.status"
+  append_wake "$state" signal retired.status "signal: retired.status" \
+    || fail "queueing the wake for the soon-to-be-removed status file failed"
+  # Teardown removes a task's status file while its durable wake row is still
+  # queued, so the annotation pass meets a queue key with no file behind it.
+  rm -f "$state/retired.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
+    || fail "drain failed with a queued wake row whose status file is gone"
+
+  grep "$(printf '\tsignal\tretired.status\t')" "$out" >/dev/null \
+    || fail "the authoritative raw wake row for the removed status file was dropped: $(cat "$out")"
+  grep -F 'OPEN DECISIONS' "$out" >/dev/null \
+    || fail "a queued wake row with a removed status file suppressed the whole presentation: $(cat "$out")"
+  grep -F 'decider [key=pick-transport] needs-decision: REST or RPC for the sync endpoint' "$out" >/dev/null \
+    || fail "another task's still-open decision was lost behind the removed status file: $(cat "$out")"
+  grep -F 'decider note: decider also left an unread note' "$out" >/dev/null \
+    || fail "the removed status file also suppressed the fleet-wide unread section: $(cat "$out")"
+  pass "a queued wake row whose status file is gone still presents other tasks' status sections"
+}
+
+test_queued_wake_with_its_status_file_present_is_unchanged() {
+  local dir state out
+  dir=$(make_case live-queue-row)
+  state="$dir/state"
+  out="$dir/drain.out"
+  printf 'needs-decision [key=pick-transport]: REST or RPC for the sync endpoint\n' > "$state/decider2.status"
+  printf 'note: live task said something\n' > "$state/live.status"
+  append_wake "$state" signal live.status "signal: live.status" \
+    || fail "queueing the wake for the live status file failed"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on the ordinary annotated path"
+
+  grep "$(printf '\tsignal\tlive.status\t')" "$out" >/dev/null \
+    || fail "the ordinary path lost its authoritative raw wake row: $(cat "$out")"
+  grep -F 'latest wake-EVENT observed at drain, not current state: live.status: note: live task said something' "$out" >/dev/null \
+    || fail "the ordinary path lost its signal annotation: $(cat "$out")"
+  grep -F 'live note: live task said something' "$out" >/dev/null \
+    || fail "the ordinary path lost its unread status line: $(cat "$out")"
+  grep -F 'decider2 [key=pick-transport] needs-decision: REST or RPC for the sync endpoint' "$out" >/dev/null \
+    || fail "the ordinary path lost a neighboring task's open decision: $(cat "$out")"
+  pass "a queued wake row whose status file is present still annotates and presents as before"
+}
+
 test_routine_working_lines_stay_silent_on_the_empty_queue() {
   local dir state out
   dir=$(make_case silent-working)
@@ -318,4 +370,6 @@ test_snapshot_does_not_ack_a_later_append
 test_retired_task_id_starts_new_status_unread
 test_open_decisions_fold_is_unchanged
 test_empty_queue_does_not_swallow_later_signal_annotation
+test_queued_wake_for_removed_status_file_still_presents_other_tasks
+test_queued_wake_with_its_status_file_present_is_unchanged
 test_routine_working_lines_stay_silent_on_the_empty_queue
