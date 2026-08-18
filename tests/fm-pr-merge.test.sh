@@ -14,6 +14,10 @@
 #   (f) malformed PR URL fails fast without calling gh-axi
 #   (g) explicit merge method is not overridden by the default --squash
 #   (h) repo override args fail fast because the repo comes from the URL
+#   (i) a commit trailer naming an AI agent as co-author refuses the merge
+#   (j) FM_PR_MERGE_ALLOW_AGENT_COAUTHOR=1 confirms and lets it through
+#   (k) a plain human Co-Authored-By trailer never blocks the merge
+#   (l) a failed commit-message lookup warns and still merges (fails open)
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -79,6 +83,56 @@ exit 0
 SH
   cat > "$case_dir/fakebin/gh" <<'SH'
 #!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+}
+
+# gh mock that also answers `pr view <n> --repo <o>/<r> --json commits --jq ...`
+# with a fixed commit message, so the agent-co-author check runs against a
+# controlled forge response instead of a real network call. Args: case_dir
+# head_sha commit_message
+add_gh_mocks_with_commit_message() {
+  local case_dir=$1 head=$2 commit_message=$3
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+exit 0
+SH
+  cat > "$case_dir/fakebin/gh" <<SH
+#!/usr/bin/env bash
+case "\${1:-} \${2:-}" in
+  "pr view")
+    case " \$* " in
+      *headRefOid*) printf '%s\n' '$head' ; exit 0 ;;
+      *commits*) printf '%s\n' '$commit_message' ; exit 0 ;;
+    esac
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+}
+
+# gh mock whose commit-message lookup itself fails (network hiccup, forge
+# error) while headRefOid still resolves normally.
+add_gh_mocks_commit_lookup_fails() {
+  local case_dir=$1 head=$2
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+exit 0
+SH
+  cat > "$case_dir/fakebin/gh" <<SH
+#!/usr/bin/env bash
+case "\${1:-} \${2:-}" in
+  "pr view")
+    case " \$* " in
+      *headRefOid*) printf '%s\n' '$head' ; exit 0 ;;
+      *commits*) echo "boom: forge lookup failed" >&2 ; exit 1 ;;
+    esac
+    ;;
+esac
 exit 0
 SH
   chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
@@ -301,6 +355,85 @@ test_parses_pr_url_for_gh_axi() {
   pass "fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments"
 }
 
+test_refuses_merge_with_agent_coauthor_trailer() {
+  local case_dir rc
+  case_dir=$(make_case agent-coauthor)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks_with_commit_message "$case_dir" aaaa000000000000000000000000000000aaaa \
+    'Co-Authored-By: Claude <noreply@anthropic.com>'
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/31 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "agent-coauthor: fm-pr-merge should refuse a commit with an agent co-author trailer"
+  assert_grep 'AGENTS.md section 1 forbids this' "$case_dir/stderr" \
+    "agent-coauthor: refusal did not explain why"
+  assert_grep 'FM_PR_MERGE_ALLOW_AGENT_COAUTHOR=1' "$case_dir/stderr" \
+    "agent-coauthor: refusal did not name the confirmation override"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "agent-coauthor: gh-axi pr merge was invoked despite the agent co-author trailer"
+  pass "fm-pr-merge refuses to merge a PR whose commit trailer names an AI agent as co-author"
+}
+
+test_confirmation_override_allows_agent_coauthor_merge() {
+  local case_dir
+  case_dir=$(make_case agent-coauthor-confirmed)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks_with_commit_message "$case_dir" bbbb000000000000000000000000000000bbbb \
+    'Co-Authored-By: Claude <noreply@anthropic.com>'
+  : > "$case_dir/gh-axi.log"
+
+  FM_PR_MERGE_ALLOW_AGENT_COAUTHOR=1 \
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/32 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "agent-coauthor-confirmed: fm-pr-merge should merge once the override confirms"
+
+  assert_grep 'confirmed' "$case_dir/stderr" \
+    "agent-coauthor-confirmed: no warning was printed for the confirmed override"
+  grep -qxF 'pr merge 32 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "agent-coauthor-confirmed: gh-axi pr merge was not invoked after the confirmation override"
+  pass "fm-pr-merge merges an agent co-author trailer once FM_PR_MERGE_ALLOW_AGENT_COAUTHOR=1 confirms it"
+}
+
+test_human_coauthor_trailer_never_blocks_merge() {
+  local case_dir
+  case_dir=$(make_case human-coauthor)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks_with_commit_message "$case_dir" cccc000000000000000000000000000000cccc \
+    'Co-Authored-By: Jane Doe <jane@example.com>'
+  : > "$case_dir/gh-axi.log"
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/33 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "human-coauthor: fm-pr-merge should not refuse a plain human co-author"
+
+  grep -qxF 'pr merge 33 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "human-coauthor: gh-axi pr merge was not invoked"
+  pass "fm-pr-merge never blocks a legitimate human Co-Authored-By trailer"
+}
+
+test_failed_commit_lookup_warns_and_still_merges() {
+  local case_dir
+  case_dir=$(make_case lookup-fails)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks_commit_lookup_fails "$case_dir" dddd000000000000000000000000000000dddd
+  : > "$case_dir/gh-axi.log"
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/34 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "lookup-fails: fm-pr-merge should not block a merge when the commit lookup itself fails"
+
+  assert_grep 'could not fetch commit messages' "$case_dir/stderr" \
+    "lookup-fails: no warning was printed for the failed lookup"
+  grep -qxF 'pr merge 34 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "lookup-fails: gh-axi pr merge was not invoked despite the lookup failure"
+  pass "fm-pr-merge fails open (warns, still merges) when the commit-message lookup itself fails"
+}
+
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
@@ -311,3 +444,7 @@ test_repo_override_args_refuse_before_recording
 test_explicit_merge_method_not_overridden
 test_method_equals_merge_method_not_overridden
 test_parses_pr_url_for_gh_axi
+test_refuses_merge_with_agent_coauthor_trailer
+test_confirmation_override_allows_agent_coauthor_merge
+test_human_coauthor_trailer_never_blocks_merge
+test_failed_commit_lookup_warns_and_still_merges

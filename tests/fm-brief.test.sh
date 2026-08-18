@@ -675,6 +675,49 @@ test_herdr_lab_contract_applies_to_scouts_but_not_secondmates() {
   pass "fm-brief.sh: Herdr lab contract covers scouts and rejects secondmate misuse"
 }
 
+test_no_agent_coauthor_rule_reaches_commit_producing_scaffolds() {
+  local home id brief mode fixture
+  home="$TMP_ROOT/coauthor-rule-home"
+  mkdir -p "$home/data"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  local needle='Never add an agent, model, or AI-tool name as a commit co-author or `Co-Authored-By:` trailer'
+
+  for mode in no-mistakes direct-PR local-only; do
+    id="brief-coauthor-$mode"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    assert_grep "$needle" "$brief" \
+      "ship brief (mode=$mode) never instructs against an agent commit co-author trailer"
+  done
+
+  id="brief-coauthor-scout"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep "$needle" "$brief" \
+    "scout brief never instructs against an agent commit co-author trailer, even though scout scratch commits can be carried into a promoted ship branch"
+
+  # A secondmate charter never commits directly - its own crewmates use the ship
+  # or scout scaffold above, which already carries the rule - so the charter
+  # itself is correctly excluded rather than merely untested.
+  id="brief-coauthor-secondmate"
+  FM_HOME="$home" FM_SECONDMATE_CHARTER=ops "$ROOT/bin/fm-brief.sh" "$id" --secondmate some-proj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_no_grep "$needle" "$brief" \
+    "secondmate charter unexpectedly carries the commit-producing rule text"
+
+  # Prove the assertion above can actually fail rather than being vacuously
+  # true: strip the rule line from a real generated brief and confirm the same
+  # check now fails against that fixture.
+  fixture="$TMP_ROOT/coauthor-rule-stripped.md"
+  grep -v "Never add an agent, model, or AI-tool name as a commit co-author" \
+    "$home/data/brief-coauthor-no-mistakes/brief.md" > "$fixture"
+  if ( assert_grep "$needle" "$fixture" "unreachable" ) >/dev/null 2>&1; then
+    fail "assert_grep did not fail against a fixture with the co-author rule stripped out"
+  fi
+
+  pass "fm-brief.sh: the no-agent-co-author rule reaches every commit-producing scaffold"
+}
+
 test_pause_verb_override_renders_all_brief_scaffolds() {
   local home kind id brief
   home="$TMP_ROOT/pause-verb-home"
@@ -768,6 +811,7 @@ test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout
 test_herdr_lab_contract_applies_to_scouts_but_not_secondmates
+test_no_agent_coauthor_rule_reaches_commit_producing_scaffolds
 test_secondmate_no_projects_charter
 test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
