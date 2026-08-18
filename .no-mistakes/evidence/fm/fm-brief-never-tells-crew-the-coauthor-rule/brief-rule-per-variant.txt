@@ -1,0 +1,17 @@
+# Generated crew briefs: the no-agent-co-author rule per scaffold variant
+# (regenerated live with bin/fm-brief.sh at 627c637)
+
+== ship brief, mode=no-mistakes: Rules section tail ==
+  line 47:8. Never add an agent, model, or AI-tool name as a commit co-author or `Co-Authored-By:` trailer; strip one if your harness inserts it by default.
+
+== ship brief, mode=direct-PR: Rules section tail ==
+  line 46:8. Never add an agent, model, or AI-tool name as a commit co-author or `Co-Authored-By:` trailer; strip one if your harness inserts it by default.
+
+== ship brief, mode=local-only: Rules section tail ==
+  line 46:8. Never add an agent, model, or AI-tool name as a commit co-author or `Co-Authored-By:` trailer; strip one if your harness inserts it by default.
+
+== scout brief: Rules section tail ==
+  line 39:8. Never add an agent, model, or AI-tool name as a commit co-author or `Co-Authored-By:` trailer; strip one if your harness inserts it by default.
+
+== secondmate charter (never commits directly - excluded by design) ==
+  rule line absent, as intended

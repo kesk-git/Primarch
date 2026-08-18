@@ -1,0 +1,72 @@
+# bin/fm-pr-merge.sh agent-co-author guard: live CLI transcripts
+# (gh mocked to a controlled forge response; gh-axi mocked to log its invocations)
+
+## 1. Agent co-author trailer -> merge REFUSED (exit 1), gh-axi pr merge never invoked
+$ fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/31
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ●  WATCHER DOWN - SUPERVISION IS OFF
+  ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+  ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+  ●  This is a supervision warning only; the guarded operation WILL still run.
+  ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  armed: state/task-x1.check.sh
+  error: PR https://github.com/example/repo/pull/31 has a commit trailer naming what looks like an AI coding agent as a co-author:
+    Co-Authored-By: Claude <noreply@anthropic.com>
+  error: AGENTS.md section 1 forbids this. If this is a genuine human co-author whose name collides, re-run with FM_PR_MERGE_ALLOW_AGENT_COAUTHOR=1 to confirm and merge anyway.
+  [exit code: 1]
+  gh-axi 'pr merge' invocations: 0
+
+## 2. Same PR with FM_PR_MERGE_ALLOW_AGENT_COAUTHOR=1 -> warns, merge proceeds
+$ FM_PR_MERGE_ALLOW_AGENT_COAUTHOR=1 fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/32
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ●  WATCHER DOWN - SUPERVISION IS OFF
+  ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+  ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+  ●  This is a supervision warning only; the guarded operation WILL still run.
+  ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  armed: state/task-x1.check.sh
+  warning: merging PR https://github.com/example/repo/pull/32 despite an agent-like co-author trailer (FM_PR_MERGE_ALLOW_AGENT_COAUTHOR=1 confirmed)
+  [exit code: 0]
+  invoked: gh-axi pr merge 32 --repo example/repo --squash
+
+## 3. Human co-author trailer -> never blocked
+$ fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/33
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ●  WATCHER DOWN - SUPERVISION IS OFF
+  ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+  ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+  ●  This is a supervision warning only; the guarded operation WILL still run.
+  ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  armed: state/task-x1.check.sh
+  [exit code: 0]
+  invoked: gh-axi pr merge 33 --repo example/repo --squash
+
+## 4. Vendor name in ordinary prose (not a Co-Authored-By line) -> never matches, merges cleanly
+$ fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/34
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ●  WATCHER DOWN - SUPERVISION IS OFF
+  ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+  ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+  ●  This is a supervision warning only; the guarded operation WILL still run.
+  ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  armed: state/task-x1.check.sh
+  [exit code: 0]
+  invoked: gh-axi pr merge 34 --repo example/repo --squash
+
+## 5. gh binary missing from PATH -> warns, still merges (fails open on infrastructure)
+$ PATH=<fakebin-without-gh>:/usr/bin:/bin fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/35
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ●  WATCHER DOWN - SUPERVISION IS OFF
+  ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+  ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+  ●  This is a supervision warning only; the guarded operation WILL still run.
+  ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  armed: state/task-x1.check.sh
+  warning: gh not found on PATH; skipping the agent-co-author commit check for https://github.com/example/repo/pull/35
+  [exit code: 0]
+  invoked: gh-axi pr merge 35 --repo example/repo --squash
