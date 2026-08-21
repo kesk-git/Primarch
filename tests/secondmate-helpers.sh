@@ -10,24 +10,11 @@
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-# A fake tmux (window ops are logged to FM_FAKE_TMUX_LOG, capture-pane echoes
-# FM_FAKE_TMUX_CAPTURE) plus a fake treehouse (durable lease of
-# FM_FAKE_TREEHOUSE_HOME, recording the lease holder to
-# FM_FAKE_TREEHOUSE_LEASE_FILE; `return` removes the target and lease unless
+# A fake tmux (window ops are logged to FM_FAKE_TMUX_LOG, list-windows returns
+# FM_FAKE_TMUX_WINDOW, capture-pane echoes FM_FAKE_TMUX_CAPTURE) plus a fake
+# treehouse (durable lease of FM_FAKE_TREEHOUSE_HOME, recording the lease holder
+# to FM_FAKE_TREEHOUSE_LEASE_FILE; `return` removes the target and lease unless
 # FM_FAKE_TREEHOUSE_RETURN_FAIL is set). Echoes the fakebin dir.
-#
-# list-windows answers the two shapes the fleet actually uses:
-#   - the cross-session selector scan (`-a`), which still returns the single
-#     fixed row FM_FAKE_TMUX_WINDOW models, and
-#   - a session's own inventory (`-t <session>`), rendered from
-#     FM_FAKE_TMUX_WINDOWS (one `session:window` per line, creation order) into
-#     whatever `-F` format was asked for. The destructive and presence paths
-#     resolve a recorded `session:window` through that inventory and act on the
-#     matched window's `@id`, so a fake that ignored `-F` and echoed one line
-#     would make every window resolve to nothing and every kill silently no-op.
-# kill-window additionally records `killed-window <session>:<window>` for the
-# id it was handed, so tests can assert WHICH endpoint was destroyed instead of
-# the argv shape the resolver happens to use.
 make_fake_tmux() {
   local dir=$1 fakebin capture
   fakebin=$(fm_fakebin "$dir")
@@ -39,65 +26,14 @@ make_fake_tmux() {
 #!/usr/bin/env bash
 set -u
 case "${1:-}" in
-  has-session|new-session|new-window|send-keys)
+  has-session|new-session|new-window|send-keys|kill-window)
     printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
-    exit 0
-    ;;
-  kill-window)
-    printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
-    killed=
-    while [ $# -gt 0 ]; do
-      [ "$1" = -t ] && { shift; killed=${1:-}; }
-      shift
-    done
-    fake_id=0
-    while IFS= read -r entry; do
-      [ -n "$entry" ] || continue
-      [ "@$fake_id" = "$killed" ] && printf 'killed-window %s\n' "$entry" >> "$FM_FAKE_TMUX_LOG"
-      fake_id=$((fake_id + 1))
-    done <<INV
-${FM_FAKE_TMUX_WINDOWS:-}
-INV
     exit 0
     ;;
   list-windows)
-    fake_all=0
-    fake_fmt=
-    fake_target=
-    shift
-    while [ $# -gt 0 ]; do
-      case "$1" in
-        -a) fake_all=1 ;;
-        -F) shift; fake_fmt=${1:-} ;;
-        -t) shift; fake_target=${1:-} ;;
-      esac
-      shift
-    done
-    if [ "$fake_all" = 1 ] || [ -z "$fake_target" ]; then
-      if [ -n "${FM_FAKE_TMUX_WINDOW:-}" ]; then
-        printf '%s\n' "$FM_FAKE_TMUX_WINDOW"
-      fi
-      exit 0
+    if [ -n "${FM_FAKE_TMUX_WINDOW:-}" ]; then
+      printf '%s\n' "$FM_FAKE_TMUX_WINDOW"
     fi
-    fake_session=${fake_target#=}
-    fake_session=${fake_session%:}
-    fake_session=${fake_session%%:*}
-    fake_id=0
-    fake_index=0
-    while IFS= read -r entry; do
-      [ -n "$entry" ] || continue
-      fake_wid="@$fake_id"
-      fake_id=$((fake_id + 1))
-      [ "${entry%%:*}" = "$fake_session" ] || continue
-      fake_row=${fake_fmt//'#{session_name}'/${entry%%:*}}
-      fake_row=${fake_row//'#{window_name}'/${entry#*:}}
-      fake_row=${fake_row//'#{window_index}'/$fake_index}
-      fake_row=${fake_row//'#{window_id}'/$fake_wid}
-      fake_index=$((fake_index + 1))
-      printf '%s\n' "$fake_row"
-    done <<INV
-${FM_FAKE_TMUX_WINDOWS:-}
-INV
     exit 0
     ;;
   display-message)

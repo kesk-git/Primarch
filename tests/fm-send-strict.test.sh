@@ -40,22 +40,6 @@ case "${1:-}" in
       exit 1
     fi
     exit 0 ;;
-  has-session)
-    target=
-    while [ $# -gt 0 ]; do
-      case "$1" in
-        -t) target=$2; shift 2 ;;
-        *) shift ;;
-      esac
-    done
-    # Real tmux's `=` exact-match prefix, stripped off each part so the dead
-    # target is recognized whether or not the caller anchors its lookup.
-    target=${target#=}
-    target=${target/:=/:}
-    if [ -n "${FM_FAKE_TMUX_DEAD_TARGET:-}" ] && [ "$target" = "$FM_FAKE_TMUX_DEAD_TARGET" ]; then
-      exit 1
-    fi
-    exit 0 ;;
   display-message)
     target=
     cursor=0
@@ -76,35 +60,7 @@ case "${1:-}" in
     printf '╭────╮\n│    │\n╰────╯\n'
     exit 0 ;;
   list-windows)
-    # `-a` is the fleet-wide "session:window" listing the bare-selector resolver
-    # reads. Without it this is the endpoint-presence read listing ONE session's
-    # windows, which is the path fm-send actually takes for a `session:window`
-    # target - so the dead-target simulation has to live here, not on
-    # has-session, or every explicit target would read dead vacuously.
-    case " $* " in
-      *" -a "*)
-        printf 'foreign:%s\n' "${FM_FAKE_TMUX_WINDOW:-fm-lost}"
-        exit 0 ;;
-    esac
-    want=
-    prev=
-    for a in "$@"; do
-      [ "$prev" = "-t" ] && want=$a
-      prev=$a
-    done
-    want=${want#=}
-    want=${want%:}
-    if [ -n "${FM_FAKE_TMUX_DEAD_TARGET:-}" ] \
-      && [ "$want" = "${FM_FAKE_TMUX_DEAD_TARGET%%:*}" ]; then
-      # The dead target's own session lists every window EXCEPT that one.
-      for w in ${FM_FAKE_TMUX_LIVE_WINDOWS:-}; do
-        [ "$w" = "${FM_FAKE_TMUX_DEAD_TARGET#*:}" ] || printf '%s\n' "$w"
-      done
-      exit 0
-    fi
-    for w in ${FM_FAKE_TMUX_LIVE_WINDOWS:-win}; do
-      printf '%s\n' "$w"
-    done
+    printf 'foreign:%s\n' "${FM_FAKE_TMUX_WINDOW:-fm-lost}"
     exit 0 ;;
 esac
 exit 0
@@ -200,17 +156,7 @@ test_unmatched_single_colon_target_must_exist() {
   dir="$TMP_ROOT/dead-explicit"; mkdir -p "$dir"
   fb=$(make_stubs "$dir"); home=$(setup_home deadexplicit); err="$dir/send.err"; log="$dir/tmux.log"; : > "$log"
 
-  # Positive control first: without it this case would pass identically if the
-  # presence gate regressed to reporting EVERY explicit target dead.
-  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" \
-    FM_FAKE_TMUX_LIVE_WINDOWS="missing" FM_SEND_SETTLE=0 \
-    "$SEND" sess:missing "hello" >/dev/null 2>"$err" \
-    || fail "a LIVE explicit tmux-shaped target must be accepted: $(cat "$err")"
-  [ -s "$log" ] || fail "a live explicit target should have reached the tmux send path"
-  : > "$log"
-
-  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" \
-    FM_FAKE_TMUX_LIVE_WINDOWS="other" FM_FAKE_TMUX_DEAD_TARGET=sess:missing FM_SEND_SETTLE=0 \
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_FAKE_TMUX_DEAD_TARGET=sess:missing FM_SEND_SETTLE=0 \
     "$SEND" sess:missing "hello" >/dev/null 2>"$err"; rc=$?
   [ "$rc" -ne 0 ] || fail "dead explicit tmux-shaped target should fail"
   assert_contains "$(cat "$err")" "not a live tmux endpoint" "dead explicit target diagnostic should name the assumed backend"

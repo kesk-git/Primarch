@@ -1342,10 +1342,9 @@ muse_worker_meta_api_key_present() {
   if [ -n "${TMUX:-}" ]; then
     session=$(tmux display-message -p '#S' 2>/dev/null) || return 1
   else
-    tmux has-session -t "$(fm_backend_tmux_anchor_target firstmate)" 2>/dev/null || return 1
+    tmux has-session -t firstmate 2>/dev/null || return 1
     session=firstmate
   fi
-  session=$(fm_backend_tmux_anchor_target "$session") || return 1
   worker_env=$(tmux show-environment -t "$session" META_API_KEY 2>/dev/null) || return 1
   case "$worker_env" in
     META_API_KEY=?*) return 0 ;;
@@ -1671,28 +1670,7 @@ if [ "$KIND" = ship ]; then
   # unregistered project resolves to the same no-mistakes standing default, which
   # is why the notice names the standing posture rather than the registry line. A
   # conditional policy is excluded: both of its legs are legitimate classifications.
-  # Only fm-project-mode.sh's malformed-line warning (its "registry-invalid:"
-  # marker) is a fault worth a spawn-time line; an absent registry and an
-  # unregistered project are documented-normal states that stay quiet.
-  # One parser run, not one per stream, so the posture and its warning come from
-  # the same read of data/projects.md. Both streams are captured together and
-  # split on fm-project-mode.sh's own "warn: " prefix: nothing here needs a
-  # writable temp dir, so there is no degraded path where the malformed-line
-  # warning goes back to being discarded.
-  STANDING_OUT=$("$FM_ROOT/bin/fm-project-mode.sh" --raw "$PROJ_NAME" 2>&1) || true
-  STANDING_MODE=
-  REGISTRY_WARN=""
-  while IFS= read -r STANDING_ROW; do
-    case "$STANDING_ROW" in
-      'warn: '*) REGISTRY_WARN=${REGISTRY_WARN:+$REGISTRY_WARN$'\n'}$STANDING_ROW ;;
-      ?*) STANDING_MODE=${STANDING_ROW%% *} ;;
-    esac
-  done <<EOF
-$STANDING_OUT
-EOF
-  case "$REGISTRY_WARN" in
-    *'registry-invalid:'*) printf '%s\n' "$REGISTRY_WARN" >&2 ;;
-  esac
+  STANDING_MODE=$("$FM_ROOT/bin/fm-project-mode.sh" --raw "$PROJ_NAME" 2>/dev/null | cut -d' ' -f1) || STANDING_MODE=
   if [ -n "$STANDING_MODE" ] && [ "$STANDING_MODE" != no-mistakes-prod-only ] \
      && [ "$(delivery_rigor_rank "$MODE")" -lt "$(delivery_rigor_rank "$STANDING_MODE")" ]; then
     echo "notice: $ID ships mode=$MODE while the standing posture for $PROJ_NAME is $STANDING_MODE - less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state" >&2

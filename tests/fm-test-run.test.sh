@@ -92,7 +92,6 @@ init_changed_fixture_repo() {
   local repo=$1 script
   mkdir -p "$repo/bin" "$repo/tests"
   cp "$RUNNER" "$repo/bin/fm-test-run.sh"
-  cp "$ROOT/bin/fm-test-env-lib.sh" "$repo/bin/fm-test-env-lib.sh"
   chmod +x "$repo/bin/fm-test-run.sh"
   for script in \
     fm-brief.test.sh \
@@ -110,10 +109,7 @@ init_changed_fixture_repo() {
     fm-bearings-snapshot.test.sh \
     fm-backend-cmux.test.sh \
     fm-backend-zellij.test.sh \
-    fm-backend-orca.test.sh \
-    fm-task-delivery.test.sh \
-    fm-bootstrap.test.sh \
-    fm-fleet-sync.test.sh; do
+    fm-backend-orca.test.sh; do
     printf '#!/usr/bin/env bash\n# tests/lib.sh\n' >"$repo/tests/$script"
     chmod +x "$repo/tests/$script"
   done
@@ -124,10 +120,7 @@ init_changed_fixture_repo() {
   printf '# .claude/settings.json\n# .pi/extensions/fm-primary-turnend-guard.ts\n' \
     >>"$repo/tests/fm-cd-pretool-check.test.sh"
   printf '# .pi/extensions/fm-primary-pi-watch.ts\n' >>"$repo/tests/fm-pi-watch-extension.test.sh"
-  mkdir -p "$repo/.agents/skills/example" "$repo/.agents/notes" "$repo/.claude" \
-    "$repo/.pi/extensions" "$repo/src"
-  : >"$repo/.agents/notes/example.md"
-  : >"$repo/bin/fm-project-mode.sh"
+  mkdir -p "$repo/.agents/skills/example" "$repo/.claude" "$repo/.pi/extensions" "$repo/src"
   : >"$repo/.agents/skills/example/SKILL.md"
   : >"$repo/.claude/settings.json"
   : >"$repo/.pi/extensions/fm-primary-pi-watch.ts"
@@ -187,44 +180,6 @@ test_changed_dependency_selection_and_unmapped_failure() {
     || fail "unmapped changed source failure is not actionable: $(cat "$tmp/err")"
   rm -rf "$tmp"
   pass "changed selection covers dependents and fails closed for unmapped source"
-}
-
-# Two mappings that exist because their absence broke something, so both are
-# pinned here. A per-task notes file has no consuming suite: it must select
-# nothing and succeed, not fail selection closed the way an unmapped source does
-# (that shape is the one asserted above, and it took `--changed` down for a whole
-# branch). The registry parser owns contracts read outside its own family - the
-# --lint rows bootstrap formats and the registry-invalid marker fleet sync selects
-# on - so it must pull in session-bootstrap too, or a parser change ships green
-# while the diagnostics that consume it go quiet.
-test_changed_selection_maps_notes_and_registry_parser() {
-  local tmp repo listed rc
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-mapping.XXXXXX")
-  repo="$tmp/repo"
-  init_changed_fixture_repo "$repo"
-
-  printf '\n' >>"$repo/.agents/notes/example.md"
-  set +e
-  (cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD) >"$tmp/out" 2>"$tmp/err"
-  rc=$?
-  set -e
-  [ "$rc" -eq 0 ] \
-    || fail "a changed notes file must not fail selection, got exit $rc: $(cat "$tmp/err")"
-  [ ! -s "$tmp/out" ] \
-    || fail "a changed notes file must select no suite, got: $(cat "$tmp/out")"
-  git -C "$repo" add .agents
-  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm notes-change
-
-  printf '\n' >>"$repo/bin/fm-project-mode.sh"
-  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
-  assert_contains "$listed" "tests/fm-task-delivery.test.sh" \
-    "registry parser selects its own contract coverage"
-  assert_contains "$listed" "tests/fm-bootstrap.test.sh" \
-    "registry parser selects the session-start lint coverage that consumes --lint"
-  assert_contains "$listed" "tests/fm-fleet-sync.test.sh" \
-    "registry parser selects the fleet-sync coverage that consumes its marker"
-  rm -rf "$tmp"
-  pass "changed selection maps a notes file to no suite and the registry parser to both consuming families"
 }
 
 test_empty_selection_emits_summary() {
@@ -552,7 +507,6 @@ test_jobs_parallel_scheduler_and_failure_propagation() {
   d=tests/fm-supervision-instructions.test.sh
   mkdir -p "$repo/bin" "$repo/tests" "$evidence" "$fake_bin"
   cp "$RUNNER" "$runner"
-  cp "$ROOT/bin/fm-test-env-lib.sh" "$repo/bin/fm-test-env-lib.sh"
   cat >"$fake_bin/stat" <<'SH'
 #!/usr/bin/env bash
 if [ "$1" = "-c" ] && [ "$2" = "%a" ]; then
@@ -673,197 +627,38 @@ SH
   pass "jobs scheduler runs proven scripts; failure propagates; non-proven refused"
 }
 
-test_serial_run_scrubs_the_ambient_home_selection() {
-  # A case points at its fixture with FM_ROOT_OVERRIDE, but every script resolves
-  # the home as "${FM_HOME:-${FM_ROOT_OVERRIDE:-...}}", so an ambient FM_HOME
-  # silently OUTRANKS that override and the case asserts against the real home
-  # instead. Every firstmate session exports FM_HOME, so a serial run started
-  # from one used to answer a different question than the same suite run in
-  # parallel, which already scrubbed these. The verdict must not depend on which
-  # lane ran it.
-  local tmp repo runner fixture out rc
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-home-scrub.XXXXXX")
-  repo="$tmp/repo"
-  runner="$repo/bin/fm-test-run.sh"
-  fixture=tests/fm-lint.test.sh
-  mkdir -p "$repo/bin" "$repo/tests"
-  cp "$RUNNER" "$runner"
-  cp "$ROOT/bin/fm-test-env-lib.sh" "$repo/bin/fm-test-env-lib.sh"
-  # The fixture reports what it actually inherited, so the assertion reads the
-  # child's real environment rather than the parent's intent.
-  cat >"$repo/$fixture" <<'SH'
-#!/usr/bin/env bash
-printf 'SAW_FM_HOME=[%s]\n' "${FM_HOME:-}"
-printf 'SAW_FM_CONFIG_OVERRIDE=[%s]\n' "${FM_CONFIG_OVERRIDE:-}"
-printf 'SAW_FM_STATE_OVERRIDE=[%s]\n' "${FM_STATE_OVERRIDE:-}"
-echo "ok - fixture ran"
-SH
-  chmod +x "$runner" "$repo/$fixture"
-
-  # Guard against a vacuous pass: if the sentinels never reached the runner at
-  # all, a scrubbed child would prove nothing. Assert the parent really exports
-  # them before asserting the child does not see them.
-  [ "$(FM_HOME=/sentinel/home bash -c 'printf %s "$FM_HOME"')" = /sentinel/home ] \
-    || { rm -rf "$tmp"; fail "sentinel export did not take effect; the case would be vacuous"; }
-
-  set +e
-  out=$(cd "$repo" && FM_HOME=/sentinel/home FM_CONFIG_OVERRIDE=/sentinel/config \
-    FM_STATE_OVERRIDE=/sentinel/state "$runner" "$fixture" 2>&1)
-  rc=$?
-  set -e
-  [ "$rc" -eq 0 ] || { rm -rf "$tmp"; fail "serial fixture run failed: $out"; }
-
-  case "$out" in
-    *'SAW_FM_HOME=[]'*) ;;
-    *) rm -rf "$tmp"; fail "serial run leaked the ambient FM_HOME into the test: $out" ;;
-  esac
-  case "$out" in
-    *'SAW_FM_CONFIG_OVERRIDE=[]'*) ;;
-    *) rm -rf "$tmp"; fail "serial run leaked FM_CONFIG_OVERRIDE into the test: $out" ;;
-  esac
-  case "$out" in
-    *'SAW_FM_STATE_OVERRIDE=[]'*) ;;
-    *) rm -rf "$tmp"; fail "serial run leaked FM_STATE_OVERRIDE into the test: $out" ;;
-  esac
-
-  rm -rf "$tmp"
-  pass "serial run scrubs the ambient home selection like the parallel path"
+test_herdr_ci_family_run_has_a_step_timeout() {
+  # The required Herdr lane's hang tripwire is the family-run *step* bound, not
+  # the 75-minute job cap. Parse the workflow as YAML so nested `with.name`
+  # artifact keys cannot masquerade as the step contract.
+  command -v ruby >/dev/null 2>&1 \
+    || fail "ruby is required to parse .github/workflows/ci.yml as YAML"
+  local json job_timeout step_timeout
+  json=$(ruby -ryaml -rjson -e '
+doc = YAML.load_file(ARGV[0])
+job = doc.fetch("jobs").fetch("tests-herdr")
+step = job.fetch("steps").find { |s|
+  s.is_a?(Hash) && s["name"] == "Run real-Herdr family (serial, required)"
 }
-
-test_direct_invocation_scrubs_the_ambient_home_selection() {
-  # The runner is not the only way a suite runs. Invoking one suite - or one
-  # case - directly is exactly what people do when something is already wrong,
-  # and there the ambient FM_HOME outranks the FM_ROOT_OVERRIDE the case uses to
-  # name its fixture just as badly. tests/lib.sh owns the same scrub for that
-  # path, so the verdict does not depend on how the suite was started.
-  local tmp suite out rc
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-home-scrub-lib.XXXXXX")
-  suite="$tmp/ambient.test.sh"
-  cat >"$suite" <<SH
-#!/usr/bin/env bash
-set -u
-# shellcheck source=tests/lib.sh
-. "$ROOT/tests/lib.sh"
-saw_case() {
-  printf 'SAW_FM_HOME=[%s]\n' "\${FM_HOME:-}"
-  printf 'SAW_FM_ROOT_OVERRIDE=[%s]\n' "\${FM_ROOT_OVERRIDE:-}"
-  printf 'SAW_FM_CONFIG_OVERRIDE=[%s]\n' "\${FM_CONFIG_OVERRIDE:-}"
-  pass "case ran"
-}
-fm_test_run_cases saw_case
-SH
-  chmod 0755 "$suite"
-
-  rc=0
-  out=$(env -u FM_TEST_CASE -u FM_TEST_HOME_SCRUB_DONE \
-    FM_HOME=/sentinel/home FM_ROOT_OVERRIDE=/sentinel/root \
-    FM_CONFIG_OVERRIDE=/sentinel/config bash "$suite" 2>&1) || rc=$?
-  [ "$rc" -eq 0 ] || { rm -rf "$tmp"; fail "directly invoked suite failed (rc=$rc): $out"; }
-  assert_contains "$out" 'SAW_FM_HOME=[]' "direct invocation leaked the ambient FM_HOME"
-  assert_contains "$out" 'SAW_FM_ROOT_OVERRIDE=[]' "direct invocation leaked the ambient FM_ROOT_OVERRIDE"
-  assert_contains "$out" 'SAW_FM_CONFIG_OVERRIDE=[]' "direct invocation leaked the ambient FM_CONFIG_OVERRIDE"
-
-  # Non-vacuous: the same sentinels, with the scrub already claimed by an
-  # enclosing test process, must reach the case untouched. Without this a suite
-  # that never received them at all would report the same empty values.
-  rc=0
-  out=$(env -u FM_TEST_CASE FM_TEST_HOME_SCRUB_DONE=1 \
-    FM_HOME=/sentinel/home FM_ROOT_OVERRIDE=/sentinel/root \
-    FM_CONFIG_OVERRIDE=/sentinel/config bash "$suite" 2>&1) || rc=$?
-  [ "$rc" -eq 0 ] || { rm -rf "$tmp"; fail "already-scrubbed suite failed (rc=$rc): $out"; }
-  assert_contains "$out" 'SAW_FM_HOME=[/sentinel/home]' \
-    "sentinels never reached the suite, so the scrub assertion above proves nothing"
-
-  rm -rf "$tmp"
-  pass "a directly invoked suite scrubs the ambient home selection too"
-}
-
-test_suite_owned_home_selection_survives_the_scrub() {
-  # The scrub clears only what was INHERITED. A default a suite sets for itself
-  # after sourcing the library - tests/wake-helpers.sh's inert tangle root is the
-  # live example - must still win, including in the per-case child the dispatcher
-  # re-runs the script in.
-  local tmp suite out rc distinct suite_root case_root
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-home-scrub-own.XXXXXX")
-  suite="$tmp/owned.test.sh"
-  cat >"$suite" <<SH
-#!/usr/bin/env bash
-set -u
-# shellcheck source=tests/lib.sh
-. "$ROOT/tests/lib.sh"
-if [ -z "\${FM_ROOT_OVERRIDE:-}" ]; then
-  FM_ROOT_OVERRIDE="\$(fm_test_tmproot fm-scrub-own-root)"
-  export FM_ROOT_OVERRIDE
-fi
-printf 'SUITE_FM_ROOT_OVERRIDE=[%s]\n' "\${FM_ROOT_OVERRIDE:-}"
-own_case() {
-  printf 'CASE_FM_ROOT_OVERRIDE=[%s]\n' "\${FM_ROOT_OVERRIDE:-}"
-  pass "case ran"
-}
-fm_test_run_cases own_case
-SH
-  chmod 0755 "$suite"
-
-  rc=0
-  out=$(env -u FM_TEST_CASE -u FM_TEST_HOME_SCRUB_DONE FM_HOME=/sentinel/home \
-    bash "$suite" 2>&1) || rc=$?
-  [ "$rc" -eq 0 ] || { rm -rf "$tmp"; fail "self-defaulting suite failed (rc=$rc): $out"; }
-
-  suite_root=$(printf '%s\n' "$out" | grep -m1 '^SUITE_FM_ROOT_OVERRIDE=' || true)
-  case_root=$(printf '%s\n' "$out" | grep -m1 '^CASE_FM_ROOT_OVERRIDE=' || true)
-  [ -n "$suite_root" ] && [ "$suite_root" != 'SUITE_FM_ROOT_OVERRIDE=[]' ] \
-    || { rm -rf "$tmp"; fail "suite never set its own FM_ROOT_OVERRIDE: $out"; }
-  [ "${suite_root#SUITE_}" = "${case_root#CASE_}" ] \
-    || { rm -rf "$tmp"; fail "the case did not run under the suite's own home selection: $out"; }
-  # The dispatcher re-runs the script per case; a second scrub there would drop
-  # the suite's default and mint a different root instead of inheriting it.
-  distinct=$(printf '%s\n' "$out" | grep '^SUITE_FM_ROOT_OVERRIDE=' | LC_ALL=C sort -u | wc -l | tr -d ' ')
-  [ "$distinct" = 1 ] \
-    || { rm -rf "$tmp"; fail "per-case child re-scrubbed the suite's own home selection: $out"; }
-
-  rm -rf "$tmp"
-  pass "a home selection the suite sets for itself survives the ambient scrub"
-}
-
-test_case_bound_must_be_a_real_bound() {
-  local tmp suite out rc
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-case-bound.XXXXXX")
-  suite="$tmp/bounded.test.sh"
-  cat >"$suite" <<SH
-#!/usr/bin/env bash
-set -u
-# shellcheck source=tests/lib.sh
-. "$ROOT/tests/lib.sh"
-case_that_passes() { pass "case ran"; }
-fm_test_run_cases case_that_passes
-SH
-  chmod 0755 "$suite"
-
-  # A bound of 0 is not "no bound with a bound's name": timeout 0 and alarm 0
-  # both disable the deadline, so accepting it would run the suite unbounded
-  # while looking bounded.
-  rc=0
-  out=$(env -u FM_TEST_CASE FM_TEST_CASE_BOUND=0 bash "$suite" 2>&1) || rc=$?
-  [ "$rc" -ne 0 ] || { rm -rf "$tmp"; fail "FM_TEST_CASE_BOUND=0 ran cases unbounded instead of failing"; }
-  assert_contains "$out" "FM_TEST_CASE_BOUND" "zero bound must fail by naming the variable"
-  assert_contains "$out" "not ok" "zero bound must report a failing verdict"
-
-  # A non-numeric bound makes `timeout` exit 125 with no verdict for any case,
-  # so it must be rejected before the timed runner is reached.
-  rc=0
-  out=$(env -u FM_TEST_CASE FM_TEST_CASE_BOUND=soon bash "$suite" 2>&1) || rc=$?
-  [ "$rc" -ne 0 ] || { rm -rf "$tmp"; fail "non-numeric FM_TEST_CASE_BOUND was accepted"; }
-  assert_contains "$out" "FM_TEST_CASE_BOUND" "non-numeric bound must fail by naming the variable"
-  assert_contains "$out" "not ok" "non-numeric bound must report a failing verdict"
-
-  # Adversarial: a real bound must still dispatch the case normally.
-  rc=0
-  out=$(env -u FM_TEST_CASE FM_TEST_CASE_BOUND=60 bash "$suite" 2>&1) || rc=$?
-  [ "$rc" -eq 0 ] || { rm -rf "$tmp"; fail "valid FM_TEST_CASE_BOUND was rejected (rc=$rc): $out"; }
-  assert_contains "$out" "ok - case ran" "valid bound must still run the case"
-
-  rm -rf "$tmp"
-  pass "per-case bound rejects values that are not a bound"
+raise "missing family-run step" if step.nil?
+raise "family-run step has no timeout-minutes" unless step.key?("timeout-minutes")
+puts JSON.generate(
+  "job_timeout" => job.fetch("timeout-minutes"),
+  "step_timeout" => step.fetch("timeout-minutes")
+)
+' "$ROOT/.github/workflows/ci.yml") \
+    || fail "could not parse tests-herdr timeouts from ci.yml"
+  job_timeout=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["job_timeout"])' <<<"$json") \
+    || fail "could not read job timeout from parsed workflow"
+  step_timeout=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["step_timeout"])' <<<"$json") \
+    || fail "could not read step timeout from parsed workflow"
+  [ "$job_timeout" = 75 ] \
+    || fail "tests-herdr job backstop must stay 75 minutes, got $job_timeout"
+  [ "$step_timeout" = 20 ] \
+    || fail "family-run step timeout must be 20 minutes, got $step_timeout"
+  [ "$step_timeout" -lt "$job_timeout" ] \
+    || fail "family-run step timeout must be below the job backstop"
+  pass "Herdr CI family-run step times out at 20 min under a 75 min job backstop"
 }
 
 test_aggregate_json() {
@@ -913,7 +708,6 @@ test_family_selection
 test_single_script_selection
 test_changed_file_selection_is_conservative
 test_changed_dependency_selection_and_unmapped_failure
-test_changed_selection_maps_notes_and_registry_parser
 test_empty_selection_emits_summary
 test_timing_markers_and_json
 test_aggregate_exit_behavior
@@ -925,8 +719,5 @@ test_portable_serial_shards_partition_the_serial_lane
 test_portable_serial_shard_lane_refusals
 test_jobs_requires_proven_isolated
 test_jobs_parallel_scheduler_and_failure_propagation
-test_serial_run_scrubs_the_ambient_home_selection
-test_direct_invocation_scrubs_the_ambient_home_selection
-test_suite_owned_home_selection_survives_the_scrub
-test_case_bound_must_be_a_real_bound
+test_herdr_ci_family_run_has_a_step_timeout
 test_aggregate_json

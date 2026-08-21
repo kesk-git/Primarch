@@ -29,40 +29,12 @@ make_fakebin() {  # <dir>
   cat > "$fb/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 [ "${FAKE_NM_SLEEP:-0}" = 1 ] && sleep 30
-# FAKE_NM_EXIT models the bounded call FAILING TO COMPLETE (124 = timed out),
-# which is what makes fm-crew-state.sh report the distinct `unreadable` state.
-exit "${FAKE_NM_EXIT:-0}"
+exit 0
 SH
   cat > "$fb/tmux" <<'SH'
 #!/usr/bin/env bash
 case "${1:-}" in
   display-message) case "$*" in *dead-*) exit 1 ;; *) printf '%%1\n' ;; esac ;;
-  has-session) case "$*" in *dead-*) exit 1 ;; esac ;;
-  list-windows)
-    # The endpoint-presence read lists a session's real windows instead of
-    # naming one target, so answer from the recorded metas and apply the same
-    # *dead-* exclusion the display-message arm uses to simulate a gone window.
-    want=
-    prev=
-    for a in "$@"; do
-      [ "$prev" = "-t" ] && want=$a
-      prev=$a
-    done
-    want=${want#=}
-    want=${want%:}
-    for m in "${FM_HOME:-/nonexistent}"/state/*.meta; do
-      [ -f "$m" ] || continue
-      w=$(grep '^window=' "$m" 2>/dev/null | tail -1 | cut -d= -f2-)
-      case "$w" in
-        "$want":*) ;;
-        *) continue ;;
-      esac
-      case "${w#*:}" in
-        *dead-*) continue ;;
-      esac
-      printf '%s\n' "${w#*:}"
-    done
-    exit 0 ;;
   capture-pane)
     case "$*" in
       *fm-domain-alpha*) printf 'stale terminal summary: Phase 7 started\n> \n' ;;
@@ -522,73 +494,6 @@ test_bad_secondmate_homes_never_revive_parent_work() {
       and (.secondmates | any(.[]; .id == "timedout" and (.reason | contains("timed out"))))
   ' >/dev/null || fail "bad home outcomes revived stale work or lacked provenance: $json"
   pass "missing, invalid, unreadable, malformed, and timed-out homes stay explicit unknowns"
-}
-
-# `unreadable` is a state token fm-crew-state.sh emits for "the run source never
-# answered". Every consumer that ENUMERATES state tokens at its own site missed
-# it when it was introduced, and each miss turns an absence of measurement back
-# into a measured answer:
-#   - bin/fm-fleet-snapshot.sh's secondmate home summary counted only `unknown`
-#     as "child current state unavailable", so a home with an unmeasured child
-#     published as a VALID `no_active_work` home with no invalidity.
-#   - bin/fm-bearings-snapshot.sh's Underway list passes such a crew through
-#     unlabelled, presenting a crew nobody could read as self-progressing.
-# The ruling on the second is LABEL, not exclude: a crew nobody could measure is
-# precisely the row a reader must see.
-test_unreadable_child_state_is_never_published_as_measured() {
-  local home mate wt child_wt fakebin canonical json
-  home=$(make_home unreadable-state-token)
-  mate="$TMP_ROOT/unreadable-state-token-home"
-
-  # Main-home ship crew with a real branch and a LIVE endpoint, so the only
-  # thing missing is the run source's answer.
-  wt="$home/projects/ghost"
-  fm_git_init_commit "$wt"
-  git -C "$wt" checkout -q -b fm/ghost
-  printf '## In flight\n- [ ] ghost - Ghost lane (repo: sample) (kind: ship) (since 2026-07-13)\n\n## Queued\n\n## Done\n' \
-    > "$home/data/backlog.md"
-  fm_write_meta "$home/state/ghost.meta" \
-    "window=firstmate:fm-ghost" "worktree=$wt" "project=sample" \
-    "harness=claude" "kind=ship" "mode=no-mistakes"
-  record_claude_state "$home/state" ghost idle
-  printf 'working: was validating\n' > "$home/state/ghost.status"
-
-  # A registered secondmate home whose only child is in the same condition.
-  make_valid_secondmate_home unread "$mate"
-  child_wt="$mate/projects/unread-child"
-  fm_git_init_commit "$child_wt"
-  git -C "$child_wt" checkout -q -b fm/unread-child
-  printf '## In flight\n- [ ] unread-child - Unread child (repo: sample) (kind: ship) (since 2026-07-13)\n\n## Queued\n\n## Done\n' \
-    > "$mate/data/backlog.md"
-  fm_write_meta "$mate/state/unread-child.meta" \
-    "window=firstmate:fm-unread-child" "worktree=$child_wt" "project=sample" \
-    "harness=claude" "kind=ship" "mode=no-mistakes"
-  record_claude_state "$mate/state" unread-child idle
-  append_secondmate_registry "$home" unread "$mate"
-
-  fakebin=$(make_fakebin "$home")
-  canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
-    FAKE_NM_EXIT=124 "$ROOT/bin/fm-fleet-snapshot.sh" --json)
-
-  printf '%s' "$canonical" | jq -e '
-    (.tasks[] | select(.id == "ghost") | .current_state.state == "unreadable")
-  ' >/dev/null || fail "the fixture did not produce an unreadable crew state: $canonical"
-
-  printf '%s' "$canonical" | jq -e '
-    .secondmate_current.records[] | select(.id == "unread")
-    | .current.state == "unknown"
-      and (.current.reason | contains("child current state unavailable: unread-child"))
-      and .invalidity == {kind:"child_current_unavailable",ids:["unread-child"]}
-  ' >/dev/null || fail "an unmeasured child made its home publish as valid: $canonical"
-
-  json=$(FAKE_NM_EXIT=124 run "$home" "$fakebin" --json)
-  printf '%s' "$json" | jq -e '
-    (.in_flight | any(.[]; .id == "ghost"))
-      and (.in_flight[] | select(.id == "ghost")
-           | .state == "unreadable"
-             and (.doing | startswith("state could not be read, not confirmed progressing")))
-  ' >/dev/null || fail "Underway presented an unmeasured crew without labelling it: $json"
-  pass "an unreadable crew invalidates its home summary and is labelled, not asserted, in Underway"
 }
 
 test_oversized_secondmate_summary_stays_strict_unknown() {
@@ -1063,6 +968,52 @@ test_superseded_queued_item_dropped_by_default() {
   printf '%s' "$json" | jq -e '.gates | any(.[]; .id == "dead-gate")' >/dev/null \
     || fail "--all-queued must restore the superseded item"
   pass "superseded queued items are dropped by default and restored with --all-queued"
+}
+
+# The collapsed captain-call contract: any due, unblocked captain-held task is
+# Captain's Call whatever its kind; a date-deferred hold is a dated gate until
+# due; a prose-deferred hold leaves the default views with a disclosure; and
+# Recently Landed excludes only what closed while still held for the captain.
+test_collapsed_captain_call_deferral_and_landed() {
+  local home fakebin json
+  home=$(make_home collapsed-call)
+  mkdir -p "$home/data"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] work-gate - Captain-gated ship work (repo: firstmate) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+- [ ] later-call - Deferred captain call (repo: firstmate) (kind: captain) (hold: revisit with the captain) (hold-kind: captain) (hold-until: 2026-08-01)
+- [ ] due-call - Due captain call (repo: firstmate) (kind: captain) (hold: overdue captain choice) (hold-kind: captain) (hold-until: 2026-07-11)
+- [ ] parked-call - Prose-parked captain call (repo: firstmate) (kind: ship) (hold: DEFERRED by captain revisit later) (hold-kind: captain)
+- [ ] external-gate - Externally held work (repo: firstmate) (kind: ship) (hold: upstream release pending) (hold-kind: external)
+
+## Done
+- [x] answered-call - Answered captain question (repo: firstmate) (kind: captain) (done 2026-07-10) (hold: captain choice pending) (hold-kind: captain)
+- [x] shipped-work - Ordinary landed work (repo: firstmate) (kind: ship) (merged 2026-07-10)
+EOF
+  fakebin=$(make_fakebin "$home")
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.decisions_open | any(.[]; .id == "work-gate"))
+      and (.decisions_open | any(.[]; .id == "due-call"))
+      and (.decisions_open | any(.[]; .id == "later-call") | not)
+      and (.decisions_open | any(.[]; .id == "parked-call") | not)
+      and (.decisions_open | any(.[]; .id == "external-gate") | not)
+      and (.gates | any(.[]; .id == "later-call" and (.reason | startswith("until 2026-08-01"))))
+      and (.gates | any(.[]; .id == "work-gate") | not)
+      and (.gates | any(.[]; .id == "parked-call") | not)
+      and (.gates | any(.[]; .id == "external-gate"))
+      and (.landed | any(.[]; .id == "shipped-work"))
+      and (.landed | any(.[]; .id == "answered-call") | not)
+      and (.omitted | any(.[]; .surface | startswith("captain holds marked deferred")))
+  ' >/dev/null || fail "the collapsed captain-call projection is wrong: $json"
+  json=$(run "$home" "$fakebin" --json --all-decisions --all-queued)
+  printf '%s' "$json" | jq -e '
+    (.decisions_open | any(.[]; .id == "parked-call"))
+      and (.gates | any(.[]; .id == "parked-call") | not)
+  ' >/dev/null || fail "--all-decisions must reveal the prose-deferred call: $json"
+  pass "captain-held tasks of any kind reach Captain's Call, deferral is honored, and landed excludes answered calls"
 }
 
 test_include_prs_is_the_only_fetch_path() {
@@ -1995,7 +1946,6 @@ test_parent_activity_evidence_is_bounded_and_disclosed
 test_active_child_overrides_old_parent_event
 test_structured_child_decision_reaches_captains_call
 test_bad_secondmate_homes_never_revive_parent_work
-test_unreadable_child_state_is_never_published_as_measured
 test_oversized_secondmate_summary_stays_strict_unknown
 test_secondmate_and_child_bounds_are_disclosed
 test_parent_decision_is_untrusted_contradiction_only
@@ -2028,6 +1978,7 @@ test_include_prs_is_the_only_fetch_path
 test_partial_github_failure_degrades
 test_perl_fallback_bounds_github_call
 test_section_caps_and_expansion_flags
+test_collapsed_captain_call_deferral_and_landed
 test_pr_repository_cap_and_expansion
 test_per_repository_pr_cap_is_disclosed
 test_projection_and_toon_fail_closed

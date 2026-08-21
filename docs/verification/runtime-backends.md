@@ -142,7 +142,8 @@ Herdr uses native registered-agent state and needs no process-name branch.
 Zellij has no verified recovery-grade agent process probe, while Orca and cmux do not support secondmate spawns, so those three retain their existing generic ordinary-launch semantics without a new liveness matcher.
 
 The current classifier matrix and its refresh guard are recorded in [Composer classification matrix](#composer-classification-matrix), with portable shape coverage in `tests/fm-composer-lib.test.sh` and `tests/fm-composer-ghost.test.sh`.
-Kimi pointer delivery and OpenCode 1.18.4 busy-queue behavior remain pinned by `tests/fm-kimi-harness.test.sh` and `tests/fm-tmux-submit-busy.test.sh`.
+Kimi pointer delivery and OpenCode 1.18.4 busy-queue behavior remain pinned by `tests/fm-kimi-harness.test.sh`, `tests/fm-tmux-submit-busy.test.sh`, and `tests/fm-composer-lib.test.sh`.
+Herdr's Claude idle-native submit confirmation is pinned by `tests/fm-backend-herdr.test.sh` and refreshed by `FM_HERDR_SUBMIT_CONFIRM_LIVE=1 tests/fm-herdr-submit-confirm-live-e2e.test.sh`.
 
 ### Cleanup endpoint identity
 
@@ -171,195 +172,6 @@ The dedicated tmux cell removed ambient tmux variables, required a socket-bound 
 Valid cleanup removed only the exact task-bound target and left the control window live.
 The metadata-only validation covers tmux, Herdr, Zellij, Orca, and cmux before backend dispatch.
 Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, Cursor, and Muse share that backend cleanup boundary; their harness-specific hook files, tokens, transcript bindings, and session-log sidecars are cleaned only after it, so no harness needs a separate endpoint parser.
-
-### Endpoint-presence check (fm_backend_target_exists)
-
-Verified on 2026-08-11 with tmux 3.7b on macOS, against an isolated test server on its own explicit socket (never the fleet's own `$TMUX` socket).
-`tmux display-message -p -t <target> '#{pane_id}'` was found to return exit 0 for every target tried: an existing window, a missing window inside a live session (where it also prints the current pane's id and name instead of failing), and a session that does not exist at all.
-`tmux has-session -t <target>` was found to fail correctly on both a missing window and a missing session.
-
-```sh
-tmux -S "$SOCK" new-session -d -s testsess -n testwin 'sleep 600'
-
-# existing window
-tmux -S "$SOCK" display-message -p -t "testsess:testwin" '#{pane_id}'; echo "rc=$?"
-tmux -S "$SOCK" has-session -t "testsess:testwin"; echo "rc=$?"
-
-# missing window inside a live session
-tmux -S "$SOCK" display-message -p -t "testsess:ghostwin" '#{pane_id} #{window_name}'; echo "rc=$?"
-tmux -S "$SOCK" has-session -t "testsess:ghostwin"; echo "rc=$?"
-
-# session that does not exist at all
-tmux -S "$SOCK" display-message -p -t "nosuchsess:nosuchwin" '#{pane_id}'; echo "rc=$?"
-tmux -S "$SOCK" has-session -t "nosuchsess:nosuchwin"; echo "rc=$?"
-```
-
-Observed output:
-
-```text
-=== existing window ===
-display-message: %0
-rc=0
-has-session: rc=0
-
-=== missing window inside a LIVE session ===
-display-message: %0 testwin
-rc=0
-has-session: can't find window: ghostwin
-rc=1
-
-=== session that does not exist at all ===
-display-message: (empty)
-rc=0
-has-session: can't find session: nosuchsess
-rc=1
-```
-
-`has-session` alone is still not sufficient, because tmux resolves each part of a target as exact name, then start-of-name, then glob.
-Verified the same day on the same isolated server: a dead window whose name is a prefix of a live sibling's name reads alive unless the lookup is anchored with tmux's `=` exact-match prefix on both parts.
-This is reachable in a real fleet, since task windows are named `fm-<task-id>` over free-form task slugs: a crashed `auth` next to a live `auth-fix` is exactly this shape.
-
-```sh
-tmux -S "$SOCK" new-session -d -s revsess -n fm-auth-fix 'sleep 300'
-tmux -S "$SOCK" list-windows -t revsess -F '#{window_name}'
-
-tmux -S "$SOCK" has-session -t "revsess:fm-auth"; echo "rc=$?"
-tmux -S "$SOCK" has-session -t "=revsess:=fm-auth"; echo "rc=$?"
-tmux -S "$SOCK" has-session -t "=revsess:=fm-auth-fix"; echo "rc=$?"
-tmux -S "$SOCK" has-session -t '%0'; echo "rc=$?"
-```
-
-Observed output:
-
-```text
-=== windows ===
-fm-auth-fix
-
-=== unanchored dead prefix ===
-rc=0
-
-=== anchored dead prefix ===
-can't find window: fm-auth
-rc=1
-
-=== anchored live exact ===
-rc=0
-
-=== bare pane id, passed through unanchored ===
-rc=0
-```
-
-The same prefix resolution applies to a bare session-name-only target, and an empty target reads alive against any live server.
-Measured the same day on a second isolated server holding one session `revsess` with windows `firstwin` (index 0, `@0`, `%0`) and `secondwin` (index 1).
-
-```sh
-tmux -S "$SOCK" has-session -t "revse"; echo "rc=$?"
-tmux -S "$SOCK" has-session -t "=revse"; echo "rc=$?"
-tmux -S "$SOCK" has-session -t "=revsess"; echo "rc=$?"
-tmux -S "$SOCK" has-session -t ""; echo "rc=$?"
-tmux -S "$SOCK" has-session -t "=:=firstwin"; echo "rc=$?"
-tmux -S "$SOCK" has-session -t "=revsess:=0"; echo "rc=$?"
-tmux -S "$SOCK" has-session -t "=revsess:=9"; echo "rc=$?"
-tmux -S "$SOCK" has-session -t "=revsess:=firstwin.0"; echo "rc=$?"
-tmux -S "$SOCK" has-session -t "=%0"; echo "rc=$?"
-tmux -S "$SOCK" has-session -t "=@0"; echo "rc=$?"
-tmux -S "$SOCK" has-session -t "%99"; echo "rc=$?"
-```
-
-Observed output:
-
-```text
-bare session name, unanchored prefix   rc=0
-bare session name, anchored prefix     rc=1
-bare session name, anchored exact      rc=0
-empty target                           rc=0
-empty session part, anchored           rc=0
-anchored window INDEX 0                rc=0
-anchored window INDEX 9 (absent)       rc=1
-anchored window with pane suffix       rc=0
-anchored pane id                       rc=1
-anchored window id                     rc=1
-absent pane id, unanchored             rc=1
-```
-
-`fm_backend_tmux_anchor_target` (`bin/fm-backend.sh`) is the single owner of exact-target resolution derived from those measurements, shared by the presence probe, `fm_backend_tmux_kill` (`bin/backends/tmux.sh`), and the two session-existence checks that decide where a task is written, so the rule cannot drift between them.
-Anchoring the read side alone is not enough, because the write side then disagrees about which session a name means.
-Measured the same day: with only `firstmate-old` alive, `has-session -t firstmate` returns rc=0 and `has-session -t "=firstmate"` returns rc=1.
-Unanchored, `fm_backend_tmux_container_ensure` would therefore report the `firstmate` session present without creating it, the task window would really be created in `firstmate-old`, and the meta would record `firstmate:fm-<id>` - which the anchored read then reports dead for a live worker.
-Both that function and `muse_worker_meta_api_key_present` (`bin/fm-spawn.sh`) now anchor through the same helper; `show-environment -t "=<session>"` was confirmed to accept the anchored form.
-It anchors both parts of a `session:window` target, anchors a bare session name, rejects an empty or malformed target (empty target, empty session part, or more than one `:`) before any tmux command runs, and passes pane ids (`%N`) and window ids (`@N`) through unanchored because those are already exact and anchoring them makes them fail.
-Anchoring does not interfere with window-index targeting, so the supervisor daemon's `firstmate:0` default is unaffected; pane-suffix targeting is handled separately, below.
-
-No tmux target syntax can name a window whose name contains a literal `.`, because tmux splits the window part on `.` as the pane separator.
-Task ids may contain `.` (`fm_backend_endpoint_atom_valid` allows it) and a task's window is named `fm-<task-id>`, so this is reachable through the ordinary spawn path.
-Measured on a session `revsess` holding a live `fm-v1.2-fix` and a live `fm-plain`.
-
-```sh
-tmux -S "$SOCK" has-session -t "revsess:fm-v1.2-fix"; echo "rc=$?"
-tmux -S "$SOCK" has-session -t "=revsess:=fm-v1.2-fix"; echo "rc=$?"
-tmux -S "$SOCK" has-session -t "=revsess:=fm-plain"; echo "rc=$?"
-
-tmux -S "$SOCK" has-session -t "=revsess:=fm-v1.0"; echo "rc=$?"
-
-tmux -S "$SOCK" list-windows -t "=my.sess" -F '#{window_name}'; echo "rc=$?"
-tmux -S "$SOCK" list-windows -t "=my.sess:" -F '#{window_name}'; echo "rc=$?"
-tmux -S "$SOCK" has-session -t "=my.sess"; echo "rc=$?"
-tmux -S "$SOCK" has-session -t "=my.sess:"; echo "rc=$?"
-```
-
-Observed output, with `revsess` holding live windows `fm-v1` (pane 0) and `fm-v1.2-fix`, and a second session `my.sess` holding a live `fm-v2.1-fix`:
-
-```text
-unanchored dotted window        can't find pane: 2-fix
-                                rc=1
-anchored dotted window          can't find window: fm-v1
-                                rc=1
-anchored dot-free control       rc=0
-anchored <live-window>.<pane>   rc=0     <- NO window of that name exists
-list-windows -t "=my.sess"      can't find pane: sess
-                                rc=1
-list-windows -t "=my.sess:"     fm-v2.1-fix
-                                rc=0
-has-session -t "=my.sess"       can't find pane: sess
-                                rc=1
-has-session -t "=my.sess:"      rc=0
-```
-
-The ambiguity runs in both directions and applies to the session part as well as the window part, so `fm_backend_target_exists` never hands tmux a composed `session:window` name string at all.
-It resolves the two parts separately against real state: the session part anchored AND suffixed with `:` so tmux parses it as a session (`list-windows -t "=<session>:"`), then the window part as a literal whole-line `grep -Fqx` over that session's `#{window_name}`, `#{window_index}`, and `#{window_id}` - the same list-real-state-and-filter shape the recovery-grade `fm_backend_tmux_agent_state` uses and that this table records for the zellij and cmux arms.
-Exactness is preserved in every part: measured on the same server, `fm-v1` and `fm-v1.2` miss while `fm-v1.2-fix` hits, a prefix session part fails the `list-windows` call outright, and window indexes and ids still hit (`0` and `@0`), so the supervisor's `firstmate:0` default is unaffected.
-A bare session-name target takes the same trailing-colon form (`has-session -t "=<name>:"`), which is exact and dot-safe: `=my.sess:` succeeds while `=my:` and `=nosuch.x:` both fail.
-
-Whether a session name may contain a `.` at all is itself tmux-version-scoped, established on 2026-08-12.
-tmux 3.2 through at least 3.5a rewrite every `.` and `:` in a new session name to `_` (`session_check_name` in upstream `session.c`, read at tags 3.4 and 3.5a), so on those versions a dotted session name cannot exist and the dot-safe session handling above is unreachable rather than unnecessary.
-tmux 3.6 and later keep the requested name verbatim and refuse a name they will not accept, which is where the `my.sess` measurements above come from (tmux 3.7b on macOS).
-`tests/fm-backend-tmux-smoke.test.sh` therefore reads the created name back from `new-session -d -P -F '#{session_name}'` and skips only the dotted-session case, naming the tmux version, when this tmux rewrote the dot; the portable CI runner's tmux 3.4 is such a version.
-Bare pane ids (`%N`) and window ids (`@N`) are already exact and unambiguous, so they stay on a plain `has-session`; anchoring them makes them fail.
-
-A window part that resolves to no real window is re-read once as a `<window>.<pane-index>` spec, confirmed with `list-panes` against the resolved base window's `@id`.
-That keeps the documented `FM_SUPERVISOR_TARGET` pane shape working: measured on the same server, a window `base` split into panes 0 and 1 reads alive for `base.0` and `base.1`, dead for `base.9`, and dead for `no-such-window.0`.
-The re-read is refused when the window part starts with `fm-`, this fleet's reserved task-window prefix (`bin/fm-spawn.sh` names every task window `fm-<task-id>`).
-Nothing in tmux distinguishes the two readings of such a string - with a live `fm-v1`, the string `fm-v1.0` is equally "an absent window" or "that window's live pane 0", and `send-keys` succeeds either way - so the prefix is what decides it, and it decides in favour of the window identity: a genuinely gone task `fm-v1.0` reads dead rather than alive off its live sibling.
-Both calls are read-only: against a socket path with no server, `list-windows` prints `error connecting` and creates no socket.
-
-`fm_backend_tmux_kill` (`bin/backends/tmux.sh`) resolves through the same owner and kills the resolved `@id`.
-Handing tmux a composed name there is destructive rather than merely wrong: measured on the same server, `kill-window -t "=killsess:=fm-v1.0"` against a session holding `base`, `fm-v1`, and `fm-v1.2-fix` - with no window named `fm-v1.0` at all - returned rc=0 and destroyed the live window `fm-v1`.
-The primitive holds no opinion about placement: it probes whatever target it is handed.
-A remotely placed worker is recognized by its meta's `remote_host` key (`fm_backend_is_remote_placement`), the same signal `bin/fm-control.sh` and `bin/fm-fleet-snapshot.sh` already route on, and the two cheap local readers that would otherwise fabricate a death for one - `bin/fm-session-start.sh`'s digest and `bin/fm-crew-state.sh`'s no-run fallback - consult it before probing.
-That key is deliberately not the `window=remote:<id>` string those metas also carry: an ordinary local task records the same string whenever the ambient tmux session is itself named `remote`, so keying on it would report every crashed window in that session alive.
-The authoritative remote state is read over the wire by `bin/fm-fleet-snapshot.sh` and `bin/fm-bootstrap.sh`.
-`pane_readable` (`bin/fm-crew-state.sh`) delegates its tmux branch to that one primitive rather than re-deriving the probe, so both readers move together.
-`fm_afk_launch_terminal_alive` and `fm_afk_launch_terminal_absent` (`bin/fm-afk-launch.sh`) remain independent tmux presence readers outside this primitive; neither had the `display-message` defect, and their targets are the away-daemon's own unique bare session names.
-`tests/fm-backend-tmux-smoke.test.sh` pins this against a real tmux server: a live window reads alive, a killed window reads dead while its own session and a window whose name extends it stay live, a bare name prefix of live windows reads dead, and a wholly nonexistent session reads dead.
-
-Audit of the other backends' `target-exists` branches for the same fall-back-to-current shape, run the same day:
-
-| Backend | Result | Basis |
-| --- | --- | --- |
-| herdr | Not examined live this session; herdr is not installed in this environment. | The target-exists branch calls `pane get <pane>` and reads only the exit status, the same single-query, exit-status-only shape that was wrong for tmux. Existing empirical evidence elsewhere in `bin/backends/herdr.sh` (`fm_backend_herdr_pane_agent_state` header) records that real herdr 0.7.1 exits 1 for `pane get` against a missing pane (error code `pane_not_found`), which argues against the same defect, but this was not independently re-run live in this session. |
-| zellij | Not examined live this session; zellij is not installed in this environment. | The target-exists branch never trusts a raw action exit status against the target: it lists actual pane, session, or tab state via `list-panes --json` / `list-sessions --short` / `list-tabs --json` and filters by exact id or name match in `jq -e`. This repo's own Zellij guarantee table above already records that zellij actions against missing targets return exit 0, which is presumably why the current code was built to avoid trusting that exit status; not independently re-verified live this session. |
-| orca | Not examined live this session; orca is not installed in this environment. | The target-exists branch passes an explicit `--terminal <id>` to `orca terminal read --json` and rejects on the JSON `ok:false` field, not on exit status alone. `tests/fm-backend-orca.test.sh` (`test_target_exists_rejects_orca_error_json`) already exercises that rejection path against a mocked `orca` CLI, but the mock encodes assumed orca behavior rather than a live orca process. |
-| cmux | Not examined live this session; cmux is not installed in this environment. | The target-exists branch lists actual panes via `list-panes --workspace --json` and filters by surface id membership in `jq -e`, the same explicit list-and-filter shape as zellij rather than a single current-fallback query; not independently re-verified live this session. |
 
 ## Composer classification matrix
 
@@ -425,12 +237,31 @@ The CLI matrix was checked directly:
 | Literal send | `herdr pane send-text <pane> <text> --session <name>` | Left text unsubmitted until Enter. |
 | Keys | `herdr pane send-keys <pane> enter|escape|ctrl+c --session <name>` | Enter and Escape worked; Ctrl-C interrupted foreground work. |
 | Capture | `herdr pane read <pane> --source recent --lines N` | Small N could return empty below viewport height; a 200-line request plus local trim was stable. |
-| Native state | `herdr agent get <pane>` | Working and done transitions were visible; native `busy` remains positive activity evidence, while native `idle` cannot close a turn and the adapter's semantic lifecycle decides worker state. |
+| Native state | `herdr agent get <pane>` | Working and done transitions were visible on some harnesses; live Claude Code 2.1.236 on Herdr 0.8.0 kept `agent_status=idle` for an entire landed turn, including a multi-second tool call, so submit confirmation falls through to the shared composer verdict. Native `busy` remains positive activity evidence, while native `idle` cannot close a turn and the adapter's semantic lifecycle decides worker state. |
 | Restart | guarded named-session stop then start | Workspace, tab, pane, and labels persisted; the agent process and registration did not. |
 | Close | `herdr pane close <pane> --session <name>` | The exact one-pane task tab closed; closing a final tab could remove the workspace. |
 
 All destructive verification used `bin/fm-herdr-lab.sh` with a non-default `fm-lab-` name and a byte-identical default-session tripwire.
 No ambient `herdr server stop` command is a supported test operation.
+
+### Submit confirmation
+
+Measured 2026-08-19 against Herdr 0.8.0 and Claude Code 2.1.236 in an isolated `fm-lab-` session.
+
+`herdr agent get` reported `agent_status=idle` on every sample across a landed one-word turn and an 8-second `sleep` tool call, while the pane rendered `Pontificating…` then `Sock-hopping… (11s · ↓ 234 tokens)`.
+`fm_backend_herdr_send_text_submit` therefore cannot treat native idle as proof of a swallow.
+The portable regressions in `tests/fm-backend-herdr.test.sh` and `tests/fm-composer-lib.test.sh` pin the verdicts: native idle plus a cleared composer is delivery, proven pending plus idle is a swallow, and proven pending plus a generating busy signal is a queued Enter.
+Refresh the live Claude proof with:
+
+```sh
+FM_HERDR_SUBMIT_CONFIRM_LIVE=1 tests/fm-herdr-submit-confirm-live-e2e.test.sh
+```
+
+Observed 2026-08-19:
+
+```text
+ok - live Herdr submit confirm: Claude Code (2.1.236 (Claude Code)) on herdr 0.8.0 reports empty for a landed idle steer
+```
 
 ### Prune and respawn
 

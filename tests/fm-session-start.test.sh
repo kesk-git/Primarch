@@ -290,43 +290,24 @@ SH
   chmod +x "$fakebin/ps"
 }
 
-# make_fake_tmux <fakebin> <live-target>: has-session succeeds only for
+# make_fake_tmux <fakebin> <live-target>: display-message succeeds only for
 # the given "session:window" target - the exact primitive
-# fm_backend_target_exists uses for a tmux endpoint liveness read. Real tmux's
-# `=` exact-match prefix is stripped off each part before comparing, so the
-# fixture models the same exact-name lookup whether or not the caller anchors.
+# fm_backend_target_exists uses for a tmux endpoint liveness read.
 make_fake_tmux() {
   local fakebin=$1 live=$2
   cat > "$fakebin/tmux" <<SH
 #!/usr/bin/env bash
 set -u
 case "\${1:-}" in
-  display-message|has-session)
+  display-message)
     target=""
     prev=""
     for a in "\$@"; do
       [ "\$prev" = "-t" ] && target="\$a"
       prev="\$a"
     done
-    target="\${target#=}"
-    target="\${target/:=/:}"
     [ "\$target" = "$live" ] && { printf '%%1\n'; exit 0; }
     exit 1
-    ;;
-  list-windows)
-    # The presence read resolves session:window by listing the session's real
-    # windows, so this arm answers for the same single live target.
-    target=""
-    prev=""
-    for a in "\$@"; do
-      [ "\$prev" = "-t" ] && target="\$a"
-      prev="\$a"
-    done
-    target="\${target#=}"
-    target="\${target%:}"
-    [ "\$target" = "${live%%:*}" ] || exit 1
-    printf '%s\n' "${live#*:}"
-    exit 0
     ;;
 esac
 exit 1
@@ -392,42 +373,19 @@ case "${1:-}" in
     esac
     ;;
   list-windows)
-    # Two readers share this inventory: the presence check matches a bare
-    # window part, and the kill path matches "<window-id> <window-part>" pairs
-    # so it can act on the resolved id instead of a name string. Emitting both
-    # line shapes answers each without inspecting the -F format; neither
-    # reader's literal match can hit the other's lines.
-    emit() { printf '%s\n@1 %s\n@1 1\n@1 @1\n' "$1" "$1"; }
     if [ "$mode" = unreadable ] && [ ! -e "$spawned" ] && [ ! -e "$killed" ]; then
       exit 1
     fi
     if [ -e "$spawned" ]; then
-      emit "$mate_window"
+      printf '%s\n' "$mate_window"
     elif [ ! -e "$killed" ] && { [ "$mode" = ambiguous ] || [ "$mode" = shell ]; }; then
-      emit "$mate_window"
+      printf '%s\n' "$mate_window"
     else
-      emit main
+      printf '%s\n' main
     fi
     exit 0
     ;;
-  has-session)
-    [ "$mode" = unreadable ] && exit 1
-    target=
-    prev=
-    for arg in "$@"; do
-      [ "$prev" = -t ] && target=$arg
-      prev=$arg
-    done
-    target=${target#=}
-    target=${target/:=/:}
-    # `missing` models a window the real inventory omits, and real tmux fails
-    # has-session for exactly that window - so presence must agree with the
-    # list-windows arm below rather than reporting a window it never lists.
-    if [ "$mode" = missing ] && [ ! -e "$spawned" ] && [ "${target##*:}" = "$mate_window" ]; then
-      exit 1
-    fi
-    exit 0
-    ;;
+  has-session) exit 0 ;;
   kill-window)
     printf '%s\n' "$*" >> "$log"
     : > "$killed"
@@ -1316,11 +1274,7 @@ EOF
 
   out=$(network_stage_report "$home" "$root")
   assert_not_contains "$out" "SECONDMATE_LIVENESS:" "successful bare-shell recovery should stay non-actionable"
-  # The kill path resolves the window from the session inventory and acts on the
-  # resolved id; a composed session:window name is destructive there, because
-  # tmux reads a `.` in the window part as a pane separator and can land on a
-  # different live window (see tests/fm-backend-tmux-smoke.test.sh).
-  assert_contains "$(cat "$log")" "kill-window -t @1" \
+  assert_contains "$(cat "$log")" "kill-window -t =firstmate:=fm-$SESSION_START_SECOND_MATE_ID" \
     "the proven bare-shell path did not remove its existing dead endpoint"
   assert_contains "$(cat "$log")" "new-window" "the proven bare-shell path did not relaunch"
   pass "session start: the proven bare-shell recovery path remains intact"

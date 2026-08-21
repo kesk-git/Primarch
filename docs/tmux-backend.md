@@ -24,13 +24,11 @@ tmux new -s firstmate
 
 Crew tasks become windows in that session.
 `tmux display-message -p '#S'` prints its name.
-If the primary harness runs outside tmux, Firstmate creates or reuses a detached session named exactly `firstmate`:
+If the primary harness runs outside tmux, Firstmate creates or reuses a detached session named `firstmate`:
 
 ```sh
 tmux attach -t firstmate
 ```
-
-A session whose name merely starts with `firstmate`, such as `firstmate-old`, is never adopted for that role: Firstmate creates the exact name it records in task metadata.
 
 Each task window is named `fm-<id>`.
 
@@ -49,7 +47,6 @@ Verify setup by spawning a small task and confirming its `fm-<id>` window appear
 ### Agent liveness probe
 
 A target-existence check proves only that the pane exists.
-It resolves the recorded session and window against live tmux state instead of asking tmux to interpret the target, so a crashed `fm-auth` window never reads alive off a live `fm-auth-fix` sibling, a task id containing a `.` still resolves, and a session that is gone entirely reads dead; [`verification/runtime-backends.md`](verification/runtime-backends.md#endpoint-presence-check-fm_backend_target_exists) owns the evidence.
 The deeper tmux agent-liveness probe first verifies exact window membership, then reads process names to distinguish a running harness from a bare idle shell.
 It classifies recognized Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, Cursor, and Muse process identities as `alive`, common shells as `dead`, an authoritatively absent window as `missing`, unreadable state as `unreadable`, and every other process as `ambiguous`.
 Only `dead` and `missing` authorize recovery because a false dead result could launch a duplicate agent.
@@ -88,7 +85,7 @@ The supervisor guard selects only the detected primary harness's signature rathe
 It types a message once and retries Enter only until the composer clears.
 Only a proven empty composer is a positive delivery acknowledgement.
 Text left in established structure remains `pending`, text in ambiguous structure remains unproven, and unreadable or unsafe state remains unknown.
-`fm-send.sh` reports every unconfirmed verdict as a failure instead of retyping or assuming delivery.
+`fm-send.sh` never retypes or assumes a confirmed submit for an unconfirmed verdict; its header owns the distinct delivered-unconfirmed exit status and operator response.
 
 OpenCode 1.18.4 has one busy-queue exception.
 While OpenCode is mid-turn, Enter queues the message but leaves its text visible until the turn completes.
@@ -101,7 +98,6 @@ Without that baseline, an `unknown` verdict is preserved untouched, so a busy-lo
 ## Limits and regression entry points
 
 - tmux is the reference path and supports secondmate homes.
-- The OpenCode busy-queue exception is tmux-specific; Herdr retains its separately documented gap.
 
 ```sh
 tests/fm-backend-tmux-smoke.test.sh
