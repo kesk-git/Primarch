@@ -20,10 +20,10 @@
 # fm_remote_job_command_preemptible names the read-only long-poll class
 # (fm-remote-delta-read.sh, the reply-log delta read). The worker preempts a
 # running preemptible job as soon as a non-preemptible job is queued and
-# publishes exit 75 with emptied stdout and stderr, identical to the poll's own
-# elapsed-window-with-no-data result. The delta read is non-destructive and
-# cursor-anchored, so the caller's normal re-arm re-reads the same data and a
-# preempted poll loses nothing.
+# publishes exit 76 with emptied stdout and stderr, distinct from the poll's
+# exit 75 elapsed-window-with-no-data result. The delta read is non-destructive
+# and cursor-anchored, so the caller's normal re-arm re-reads the same data and
+# a preempted poll loses nothing.
 #
 # The worker accepts only a tracked, non-symlink executable named fm-*.sh below
 # its configured FM_ROOT/bin. Every child receives env -i with the composed
@@ -57,12 +57,8 @@ FM_REMOTE_JOB_TIMEOUT=${FM_REMOTE_JOB_TIMEOUT:-360}
 FM_REMOTE_JOB_WAIT_GRACE=${FM_REMOTE_JOB_WAIT_GRACE:-30}
 FM_REMOTE_JOB_POLL_SECONDS=${FM_REMOTE_JOB_POLL_SECONDS:-0.05}
 FM_REMOTE_JOB_REAP_SECONDS=${FM_REMOTE_JOB_REAP_SECONDS:-3600}
-# Bound on how long a Linux worker replacement waits for a prior supervisor to
-# actually release the shared worker.lock directory. That release is an
-# external condition of unknown duration, not a fixed number of attempts, so
-# fm_remote_job_wait_for_linux_worker_replacement polls for it against this
-# wall-clock deadline instead of a hardcoded retry count.
-FM_REMOTE_JOB_LINUX_STARTUP_WAIT_SECONDS=${FM_REMOTE_JOB_LINUX_STARTUP_WAIT_SECONDS:-90}
+# shellcheck disable=SC2034 # Shared protocol constant consumed by the worker and sourcing callers.
+FM_REMOTE_JOB_PREEMPTED_EXIT=76
 FM_REMOTE_JOB_OPERATOR_PATH=
 FM_REMOTE_JOB_CHILD_PATH=
 FM_REMOTE_JOB_STATE=
@@ -97,8 +93,6 @@ fm_remote_job_validate_settings() {
   case "$FM_REMOTE_JOB_WAIT_GRACE" in ''|*[!0-9]*) return 1 ;; esac
   [ "$FM_REMOTE_JOB_WAIT_GRACE" -le 300 ] || return 1
   case "$FM_REMOTE_JOB_REAP_SECONDS" in ''|*[!0-9]*|0) return 1 ;; esac
-  case "$FM_REMOTE_JOB_LINUX_STARTUP_WAIT_SECONDS" in ''|*[!0-9]*|0) return 1 ;; esac
-  [ "$FM_REMOTE_JOB_LINUX_STARTUP_WAIT_SECONDS" -le 3600 ] || return 1
   return 0
 }
 
@@ -890,15 +884,10 @@ fm_remote_job_probe() { # <account-home>; a fresh worker heartbeat or active job
   [ $((now - mtime)) -le 10 ]
 }
 
-fm_remote_job_probe_ready() { # <remote-root> <account-home>; the single readiness postcondition every waiter converges on
-  local root=$1 account_home=$2
-  fm_remote_job_probe "$account_home" && fm_remote_job_worker_identity_matches "$root" "$account_home"
-}
-
 fm_remote_job_wait_for_probe() { # <remote-root> <account-home>
   local root=$1 account_home=$2 i=0
   while [ "$i" -lt 200 ]; do
-    fm_remote_job_probe_ready "$root" "$account_home" && return 0
+    fm_remote_job_probe "$account_home" && fm_remote_job_worker_identity_matches "$root" "$account_home" && return 0
     i=$((i + 1))
     sleep 0.1
   done
@@ -980,65 +969,8 @@ fm_remote_job_start_linux_worker() { # <remote-root> <account-home>
   FM_REMOTE_JOB_REPAIRED=1
 }
 
-# A replaced Linux supervisor can lose its first ownership race while a prior
-# supervisor is still releasing the shared worker.lock directory. That release
-# is an external condition of unknown duration, not a fixed number of
-# attempts, so this polls the actual readiness postcondition against a
-# wall-clock deadline: it reissues the idempotent start about once a second so
-# a genuinely dead worker is relaunched promptly, and checks readiness every
-# tenth of a second so a release that clears quickly is not paid for in
-# whole-window increments.
-# Returns 0 once the worker reports ready, 2 when the start itself was refused
-# - which already named its own precise cause in FM_REMOTE_JOB_ERROR - and 1
-# when the deadline passed with the worker still not ready.
-fm_remote_job_wait_for_linux_worker_replacement() { # <root> <account-home>
-  local root=$1 account_home=$2 deadline last_start=0 now
-  deadline=$(( $(date +%s) + FM_REMOTE_JOB_LINUX_STARTUP_WAIT_SECONDS ))
-  while :; do
-    now=$(date +%s)
-    if [ $((now - last_start)) -ge 1 ]; then
-      fm_remote_job_start_linux_worker "$root" "$account_home" || return 2
-      FM_REMOTE_JOB_REPAIRED=1
-      last_start=$now
-    fi
-    fm_remote_job_probe_ready "$root" "$account_home" && return 0
-    [ "$now" -lt "$deadline" ] || return 1
-    sleep 0.1
-  done
-}
-
-# Best-effort, read-only description of what is still holding the worker lock
-# when a startup wait ultimately times out, so the failure names the state
-# instead of only reporting the missing postcondition.
-fm_remote_job_worker_lock_state() { # <account-home>
-  local account_home=$1 lock mtime now age pid
-  fm_remote_job_prepare_state "$account_home" 2>/dev/null || { printf 'the remote job state could not be inspected'; return 0; }
-  lock=$(fm_remote_job_worker_lock_path)
-  if [ ! -e "$lock" ]; then
-    printf 'no worker lock is held'
-    return 0
-  fi
-  if [ -e "$lock/quarantine" ] || [ -L "$lock/quarantine" ]; then
-    printf 'the worker lock is quarantined after an unconfirmed shutdown'
-    return 0
-  fi
-  mtime=$(fm_remote_job_path_mtime "$lock" 2>/dev/null || true)
-  now=$(date +%s)
-  case "$mtime" in ''|*[!0-9]*) age= ;; *) age=$((now - mtime)) ;; esac
-  if fm_remote_job_lock_owner_matches_process "$account_home"; then
-    pid=$FM_REMOTE_JOB_OWNER_PID
-    if [ -n "$age" ]; then
-      printf 'the worker lock is still held by pid %s for about %ss' "$pid" "$age"
-    else
-      printf 'the worker lock is still held by pid %s' "$pid"
-    fi
-    return 0
-  fi
-  printf 'the worker lock is present but its recorded owner is no longer verifiable'
-}
-
 fm_remote_job_ensure_worker() { # <remote-root> <account-home>
-  local root=$1 account_home=$2 platform uid identity_matches=0 wait_status
+  local root=$1 account_home=$2 platform uid identity_matches=0
   FM_REMOTE_JOB_ERROR=
   FM_REMOTE_JOB_REPAIRED=0
   root=$(fm_remote_job_canonical_existing_dir "$root") || {
@@ -1081,14 +1013,15 @@ fm_remote_job_ensure_worker() { # <remote-root> <account-home>
     FM_REMOTE_JOB_REPAIRED=1
     fm_remote_job_wait_for_probe "$root" "$account_home" && return 0
   else
-    wait_status=0
-    fm_remote_job_wait_for_linux_worker_replacement "$root" "$account_home" || wait_status=$?
-    [ "$wait_status" -ne 0 ] || return 0
-    [ "$wait_status" -ne 2 ] || return 1
+    # A replaced Linux supervisor can lose its first ownership race while the
+    # prior supervisor finishes releasing the shared worker lock. Retry the
+    # idempotent start once, matching the bounded recovery already used above
+    # for launchd, before reporting a startup failure.
+    fm_remote_job_start_linux_worker "$root" "$account_home" || return 1
+    FM_REMOTE_JOB_REPAIRED=1
+    fm_remote_job_wait_for_probe "$root" "$account_home" && return 0
   fi
-  if [ -z "$FM_REMOTE_JOB_ERROR" ]; then
-    # shellcheck disable=SC2034 # Sourceable API consumed by the entrypoint and remote doctor.
-    FM_REMOTE_JOB_ERROR="remote job worker did not report ready after startup ($(fm_remote_job_worker_lock_state "$account_home"))"
-  fi
+  # shellcheck disable=SC2034 # Sourceable API consumed by the entrypoint and remote doctor.
+  FM_REMOTE_JOB_ERROR="remote job worker did not report ready after startup"
   return 1
 }

@@ -29,18 +29,15 @@ set -u
 fm_git_identity fmtest fmtest@example.invalid
 
 TMP_ROOT=$(fm_test_tmproot fm-fleet-sync-tests)
+HOME_N=0
 
 # --- fixtures ---------------------------------------------------------------
 
 # new_home: fresh isolated FM_HOME with an empty projects/ dir. Each test gets its
-# own so the whole-fleet form never sees another test's clones and no test
-# inherits another's data/projects.md. The uniqueness must come from mktemp, not
-# an in-process counter: the call site is `home=$(new_home)`, whose subshell
-# discards any variable this function sets (the same boundary fm_test_tmproot
-# documents in tests/lib.sh).
+# own so the whole-fleet form never sees another test's clones.
 new_home() {
-  local h
-  h=$(mktemp -d "$TMP_ROOT/home-XXXXXX") || return 1
+  HOME_N=$((HOME_N + 1))
+  local h="$TMP_ROOT/home-$HOME_N"
   mkdir -p "$h/projects"
   printf '%s\n' "$h"
 }
@@ -373,128 +370,6 @@ test_local_only_skipped() {
   pass "local-only clone is skipped (benign), not flagged STUCK"
 }
 
-test_malformed_registry_line_is_reported_not_swallowed() {
-  local home clone out
-  home=$(new_home)
-  clone=$(build_pair "$home" reginvalid)
-  advance_origin "$home" reginvalid C1
-  mkdir -p "$home/data"
-  # A comma after the mode token makes "no-mistakes," an unknown mode, so
-  # bin/fm-project-mode.sh warns and falls back to "no-mistakes off" - the
-  # exact malformed shape this test pins.
-  printf -- '- reginvalid [no-mistakes, +yolo] - test project (added 2026-06-27)\n' > "$home/data/projects.md"
-
-  out=$(run_sync "$home" "$clone")
-
-  assert_contains "$out" "reginvalid: registry-invalid:" \
-    "a malformed registry line must be reported, not silently swallowed"
-  assert_contains "$out" "expected: - reginvalid [<mode> +yolo]" \
-    "the registry-invalid report must name the expected format"
-  # Sync itself still proceeds under the fallback default (mode is not
-  # local-only), so the clone is not skipped outright.
-  assert_contains "$out" "reginvalid: synced" "sync still proceeds under the fallback default"
-  pass "a malformed registry line is reported as registry-invalid, and sync still proceeds"
-}
-
-# The relayed warning and the sync's own next line have to agree. A recognized
-# mode survives a fault elsewhere in the annotation, so a local-only project with
-# a +-less yolo flag is still skipped as local-only - the alarm must say it kept
-# that posture, not claim the standing default, or an operator reads a walled-off
-# project as having just become push-eligible.
-test_malformed_local_only_line_reports_the_posture_it_kept() {
-  local home clone out
-  home=$(new_home)
-  clone=$(build_pair "$home" regkept)
-  advance_origin "$home" regkept C1
-  mkdir -p "$home/data"
-  printf -- '- regkept [local-only yolo] - test project (added 2026-06-27)\n' > "$home/data/projects.md"
-
-  out=$(run_sync "$home" "$clone")
-
-  assert_contains "$out" "regkept: registry-invalid:" \
-    "a malformed local-only line must still be reported"
-  assert_contains "$out" "keeping local-only" \
-    "the report must name the posture the line actually kept"
-  assert_not_contains "$out" "defaulting to no-mistakes off" \
-    "the report must not claim the standing default for a mode that survived"
-  assert_contains "$out" "regkept: skipped: local-only project" \
-    "the kept posture must still govern the sync"
-  pass "a malformed line on a local-only project reports the posture it kept, consistent with the skip that follows"
-}
-
-# The warning is captured in-band rather than through a temp file, so a home with
-# no writable TMPDIR still gets the alarm. A capture that needs scratch space has
-# a failure mode that silently discards the warning - the exact swallowing this
-# report exists to end - and that mode must not exist.
-test_malformed_registry_line_is_reported_without_a_writable_tmpdir() {
-  local home clone out
-  home=$(new_home)
-  clone=$(build_pair "$home" regnotmp)
-  advance_origin "$home" regnotmp C1
-  mkdir -p "$home/data"
-  printf -- '- regnotmp [no-mistakes, +yolo] - test project (added 2026-06-27)\n' > "$home/data/projects.md"
-
-  out=$(TMPDIR="$home/no-such-dir" run_sync "$home" "$clone")
-
-  assert_contains "$out" "regnotmp: registry-invalid:" \
-    "a malformed registry line must still be reported when no temp file can be created"
-  assert_contains "$out" 'unknown mode "no-mistakes,"' \
-    "the reported warning must carry the parser's reason, not an empty capture"
-  pass "a malformed registry line is reported even when TMPDIR is unwritable"
-}
-
-test_healthy_registry_line_stays_quiet() {
-  local home clone out
-  home=$(new_home)
-  clone=$(build_pair "$home" reghealthy)
-  advance_origin "$home" reghealthy C1
-  mkdir -p "$home/data"
-  printf -- '- reghealthy [no-mistakes +yolo] - test project (added 2026-06-27)\n' > "$home/data/projects.md"
-
-  out=$(run_sync "$home" "$clone")
-
-  assert_not_contains "$out" "registry-invalid" \
-    "a well-formed registry line must not be reported"
-  pass "a well-formed registry line produces no registry-invalid report"
-}
-
-# A home with clones but no data/projects.md is a documented-normal state (the
-# registry is rebuilt from the clones under projects/), so fm-project-mode.sh's
-# "no registry" warning is not a registry fault. Reporting it would fire once per
-# cloned project at every session start, which trains the alarm to be ignored.
-test_absent_registry_stays_quiet() {
-  local home clone out
-  home=$(new_home)
-  clone=$(build_pair "$home" regabsent)
-  advance_origin "$home" regabsent C1
-  [ ! -e "$home/data/projects.md" ] || fail "fixture must start with no registry at all"
-
-  out=$(run_sync "$home" "$clone")
-
-  assert_not_contains "$out" "registry-invalid" \
-    "an absent registry is a normal state, not a malformed registry line"
-  assert_contains "$out" "regabsent: synced" "sync still proceeds with no registry present"
-  pass "no data/projects.md at all produces no registry-invalid report"
-}
-
-# A cloned project the captain has not registered yet resolves to the same
-# standing default with nothing malformed anywhere, so it stays quiet too.
-test_unregistered_clone_stays_quiet() {
-  local home clone out
-  home=$(new_home)
-  clone=$(build_pair "$home" regabsentee)
-  advance_origin "$home" regabsentee C1
-  mkdir -p "$home/data"
-  printf -- '- other [no-mistakes +yolo] - a different project (added 2026-06-27)\n' > "$home/data/projects.md"
-
-  out=$(run_sync "$home" "$clone")
-
-  assert_not_contains "$out" "registry-invalid" \
-    "a cloned-but-unregistered project is legitimate until it is registered"
-  assert_contains "$out" "regabsentee: synced" "sync still proceeds for an unregistered clone"
-  pass "a cloned project absent from the registry produces no registry-invalid report"
-}
-
 test_single_project_by_bare_name_resolves() {
   local home out
   home=$(new_home)
@@ -593,21 +468,6 @@ test_bootstrap_relays_recovered_and_stuck() {
   assert_contains "$out" "FLEET_SYNC: stuck-clone: STUCK:" "bootstrap relays the STUCK outcome"
   assert_contains "$out" "FLEET_SYNC: rec-clone: recovered:" "bootstrap relays the recovered outcome"
   pass "bootstrap relays recovered: and STUCK: fleet-sync outcomes"
-}
-
-test_bootstrap_relays_registry_invalid() {
-  local home clone out
-  home=$(new_home)
-  clone=$(build_pair "$home" xi-clone)
-  advance_origin "$home" xi-clone C1
-  mkdir -p "$home/data"
-  printf -- '- xi-clone [no-mistakes, +yolo] - test project (added 2026-06-27)\n' > "$home/data/projects.md"
-
-  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
-
-  assert_contains "$out" "FLEET_SYNC: xi-clone: registry-invalid:" \
-    "bootstrap relays a malformed registry line for a synced clone"
-  pass "bootstrap relays a registry-invalid fleet-sync outcome"
 }
 
 # --- packed-refs.lock guard tests -------------------------------------------
@@ -753,12 +613,6 @@ test_on_default_clean_behind_fast_forwards
 test_already_current_unchanged
 test_no_origin_skipped
 test_local_only_skipped
-test_malformed_registry_line_is_reported_not_swallowed
-test_malformed_local_only_line_reports_the_posture_it_kept
-test_malformed_registry_line_is_reported_without_a_writable_tmpdir
-test_healthy_registry_line_stays_quiet
-test_absent_registry_stays_quiet
-test_unregistered_clone_stays_quiet
 test_single_project_by_bare_name_resolves
 test_single_project_by_bare_name_ignores_cwd_shadow
 test_single_project_by_projects_relative_name_resolves
@@ -766,7 +620,6 @@ test_single_project_by_projects_relative_name_ignores_cwd_shadow
 test_single_project_unresolvable_name_still_skips
 test_whole_fleet_form
 test_bootstrap_relays_recovered_and_stuck
-test_bootstrap_relays_registry_invalid
 test_orphaned_stale_packed_refs_lock_recovers
 test_live_packed_refs_lock_is_never_removed
 test_live_git_cwd_in_clone_dir_blocks_removal

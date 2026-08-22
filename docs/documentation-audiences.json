@@ -109,14 +109,6 @@
   ],
   "surfaces": [
     {
-      "path": ".agents/notes/fm-active-run-idle-pane-not-absorbed.md",
-      "audience": "maintainer-architecture"
-    },
-    {
-      "path": ".agents/notes/fm-registry-typo-silently-defaults.md",
-      "audience": "maintainer-architecture"
-    },
-    {
       "path": ".agents/skills/afk/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -134,6 +126,10 @@
     },
     {
       "path": ".agents/skills/bootstrap-diagnostics/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/captain-hold-lifecycle/SKILL.md",
       "audience": "agent-runtime"
     },
     {
@@ -205,6 +201,10 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "GROK_BOT.md",
+      "audience": "public-product"
+    },
+    {
       "path": "README.md",
       "audience": "public-product"
     },
@@ -249,7 +249,7 @@
       "audience": "operator-current"
     },
     {
-      "path": "docs/decision-hold-lifecycle.md",
+      "path": "docs/captain-hold-lifecycle.md",
       "audience": "maintainer-architecture"
     },
     {

@@ -39,31 +39,6 @@ export FM_GATE_REFUSE_BYPASS=1
 # shellcheck disable=SC2034
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# --- ambient home selection -------------------------------------------------
-#
-# A case points at its fixture with FM_ROOT_OVERRIDE, but every script resolves
-# its home as "${FM_HOME:-${FM_ROOT_OVERRIDE:-...}}", so an ambient FM_HOME
-# OUTRANKS that override and the case silently asserts against the invoking
-# shell's home instead. Every firstmate session exports FM_HOME, so the guard
-# has to hold on the path people actually use when something is already wrong -
-# invoking one suite or one case directly to debug it - and not only under
-# bin/fm-test-run.sh, which scrubs the same list for its own children. The list
-# has one owner; see bin/fm-test-env-lib.sh.
-#
-# Only the AMBIENT inherited values are dropped, at source time, before any case
-# runs: whatever a suite or case sets for itself afterwards (tests/wake-helpers.sh's
-# FM_ROOT_OVERRIDE default, a per-case override) still wins. FM_TEST_HOME_SCRUB_DONE
-# is exported so this happens exactly once per process tree - fm_test_run_cases
-# re-runs the script per case, and a nested suite inherits its parent's world on
-# purpose, so re-scrubbing there would discard a deliberate selection rather
-# than an ambient one.
-# shellcheck source=bin/fm-test-env-lib.sh
-. "$ROOT/bin/fm-test-env-lib.sh"
-if [ -z "${FM_TEST_HOME_SCRUB_DONE:-}" ]; then
-  fm_test_scrub_home_selection_env
-  export FM_TEST_HOME_SCRUB_DONE=1
-fi
-
 # --- reporters --------------------------------------------------------------
 
 fail() {
@@ -73,84 +48,6 @@ fail() {
 
 pass() {
   printf 'ok - %s\n' "$1"
-}
-
-# --- bounded per-case dispatch ----------------------------------------------
-#
-# A wedged case must name itself. With no per-case bound the only signal is the
-# CI job dying at its own ceiling, and that reports no verdict for ANY case in
-# the file - not even the ones that already passed, because the runner tees the
-# file's output and never reaches its end marker.
-#
-# fm_test_run_cases <case-fn>... runs each case in its own child of the same
-# script, bounded by bin/fm-timeout-lib.sh - the single owner of bounded
-# execution, and the reason this cannot simply wrap the call in a subshell: that
-# owner terminates the whole process GROUP, so a case wedged on a child process
-# cannot keep the suite's output open either. The first case to hit the bound
-# prints one named "not ok" line and stops the run.
-#
-# The bound is wall clock, so it belongs far above the slowest honest case on
-# the slowest supported runner, never close to it: a bound that fires on a
-# slow-but-progressing case is worse than no bound at all. The slowest case in
-# tests/fm-watcher-lock.test.sh is the cycle-exit ledger, which runs eight arm
-# cycles back to back and measures 40-50s across repeated runs; the default
-# therefore keeps roughly six times that headroom, which still names a wedge in
-# minutes rather than in a quarter of an hour. Measure before lowering it.
-# FM_TEST_CASE_BOUND overrides it.
-FM_TEST_CASE_BOUND=${FM_TEST_CASE_BOUND:-300}
-
-# No case may leave a background job of its own running. A survivor inherits the
-# script's stdout and stderr, so it holds the runner's pipe open long after the
-# script itself has exited - the same silence a wedged case produces, with no
-# failing case to point at. Driven from fm_test_cleanup rather than from the
-# case's return path, because a case that ends through fail() never reaches its
-# return path, and that is exactly when a helper is most likely left running.
-fm_test_reap_case_jobs() {
-  local job
-  [ -n "${FM_TEST_CASE:-}" ] || return 0
-  for job in $(jobs -p 2>/dev/null); do
-    kill -TERM "$job" 2>/dev/null || true
-  done
-}
-
-# bin/fm-timeout-lib.sh states it plainly: a non-positive bound is not a bound,
-# because `timeout 0` and the perl fallback's `alarm 0` both disable the
-# deadline. So FM_TEST_CASE_BOUND=0 - the obvious way to switch the bound off
-# while debugging - would silently restore the unbounded run this dispatcher
-# exists to prevent, while still looking bounded; a non-numeric value would exit
-# 125 out of `timeout` with no named case at all. Both are rejected here, loudly
-# and by name, before any case runs.
-fm_test_assert_case_bound() {
-  local bound=${FM_TEST_CASE_BOUND:-}
-  case "$bound" in
-    '' | *[!0-9]*)
-      fail "FM_TEST_CASE_BOUND must be a whole number of seconds, got '$bound'"
-      ;;
-  esac
-  [ "$bound" -gt 0 ] \
-    || fail "FM_TEST_CASE_BOUND must be greater than 0 seconds, got '$bound'; 0 disables the bound rather than setting one"
-}
-
-fm_test_run_cases() {
-  local case_name rc
-  if [ -n "${FM_TEST_CASE:-}" ]; then
-    "$FM_TEST_CASE"
-    return $?
-  fi
-  fm_test_assert_case_bound
-  for case_name in "$@"; do
-    rc=0
-    (
-      export FM_TEST_CASE="$case_name"
-      # shellcheck source=bin/fm-timeout-lib.sh
-      . "$ROOT/bin/fm-timeout-lib.sh"
-      fm_run_timed "$FM_TEST_CASE_BOUND" bash "$0"
-    ) || rc=$?
-    if [ "$rc" -eq 124 ]; then
-      fail "$case_name: no result within ${FM_TEST_CASE_BOUND}s - this case wedged"
-    fi
-    [ "$rc" -eq 0 ] || exit "$rc"
-  done
 }
 
 # --- self-cleaning temp root ------------------------------------------------
@@ -187,8 +84,6 @@ FM_TEST_OWNER_IDENTITY=$(fm_test_pid_identity "$$") || {
 
 fm_test_cleanup() {
   local d
-  # Before removing fixtures, so a survivor cannot keep writing into them.
-  fm_test_reap_case_jobs
   for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"; do
     [ -n "$d" ] && rm -rf "$d"
   done

@@ -10,8 +10,7 @@
 #                 "BACKEND_INVALID: <name> (known: <names>)",
 #                 "STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>",
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
-#                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK|registry-invalid: <detail>",
-#                 "PROJECT_REGISTRY: <name>: <warning> - line: \"<raw line>\" - expected: <format>",
+#                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK: <detail>",
 #                 "PR_CHECK_MIGRATION: <private remediation>",
 #                 "TANGLE: <remediation>",
 #                 "SECONDMATE_SYNC: secondmate <id>: skipped: <reason>",
@@ -224,7 +223,6 @@ fleet_sync_relay_filtered_output() {
       *': skipped:'*) echo "FLEET_SYNC: $line" ;;
       *': STUCK:'*) echo "FLEET_SYNC: $line" ;;
       *': recovered:'*) echo "FLEET_SYNC: $line" ;;
-      *': registry-invalid:'*) echo "FLEET_SYNC: $line" ;;
     esac
   done < "$tmp"
 }
@@ -1087,29 +1085,6 @@ crew_dispatch_validate() {
   fi
 }
 
-# Lint of the whole registry, so a malformed line is diagnosed regardless of
-# whether that project is cloned locally or ever touched by fleet_sync's own
-# per-clone check. bin/fm-project-mode.sh --lint is the single owner of the
-# registry format and of which lines are faults (AGENTS.md "one-owner rule"); it
-# validates every line in one process, including a malformed duplicate entry for
-# an already-registered name, and this never re-parses the format itself. A
-# healthy, absent, or unvalidatable registry stays silent - the helper's own
-# stderr is left unredirected so a broken owner is visible rather than mistaken
-# for a clean registry. Only a row carrying all three fields of the documented
-# --lint shape is formatted: a helper too old to know --lint takes it as a project
-# name and prints a one-field posture instead, which must not become a diagnostic.
-project_registry_lint() {
-  local name fault raw
-  [ -x "$FM_ROOT/bin/fm-project-mode.sh" ] || return 0
-  [ -f "$DATA/projects.md" ] || return 0
-  while IFS=$'\t' read -r name fault raw; do
-    [ -n "$name" ] || continue
-    [ -n "$fault" ] || continue
-    [ -n "$raw" ] || continue
-    echo "PROJECT_REGISTRY: $name: $fault - line: \"$raw\" - expected: - $name [<mode> +yolo] - <desc> (added <date>)"
-  done < <(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$FM_ROOT/bin/fm-project-mode.sh" --lint)
-}
-
 startup_memory_budget_setup() {
   # Primary bootstrap owns default publication. A secondmate is deliberately
   # passive here because its setting must converge from the primary through the
@@ -1212,7 +1187,6 @@ detect_local_config() {
     echo "MISSING_MANUAL: cursor-agent (instructions: $(manual_install_url cursor-agent))"
   fi
   crew_dispatch_validate
-  project_registry_lint
   if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ] \
     && ! fm_backlog_backend_manual "$CONFIG" && fm_tasks_axi_compatible; then
     echo "BOOTSTRAP_INFO: tasks-axi available"

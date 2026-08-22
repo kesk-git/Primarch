@@ -48,9 +48,6 @@ set -eu
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
 
-# shellcheck source=bin/fm-test-env-lib.sh
-. "$ROOT/bin/fm-test-env-lib.sh"
-
 JOBS=4
 JSON_PATH=
 LIST_ONLY=0
@@ -156,11 +153,11 @@ list_parallel_candidates() {
 tests/fm-arm-pretool-check.test.sh
 tests/fm-backend-herdr.test.sh
 tests/fm-brief.test.sh
+tests/fm-captain-hold-lifecycle.test.sh
 tests/fm-cd-pretool-check.test.sh
 tests/fm-composer-ghost.test.sh
 tests/fm-composer-lib.test.sh
 tests/fm-crew-state.test.sh
-tests/fm-decision-hold-lifecycle.test.sh
 tests/fm-ensure-agents-md.test.sh
 tests/fm-grok-harness.test.sh
 tests/fm-herdr-lab.test.sh
@@ -428,7 +425,8 @@ for script in "${CANDIDATES[@]}"; do
     export TMPDIR="$work/tmp"
     export TMP="$work/tmp"
     # Clear ambient fleet overrides so candidates cannot share a live home.
-    fm_test_scrub_home_selection_env
+    unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
+      FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
     cd "$ROOT" || exit 1
     begin_ms=$(now_ms)
     bash "$script" >"$work/out/stdout" 2>"$work/out/stderr"

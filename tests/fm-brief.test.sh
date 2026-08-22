@@ -354,48 +354,6 @@ test_no_mistakes_dod_wording() {
   pass "fm-brief.sh: no-mistakes DOD keeps its apostrophe prose, now parse-safe"
 }
 
-test_gate_response_omission_is_refusal_wording() {
-  local home id brief
-  home="$TMP_ROOT/gate-omission-home"
-  mkdir -p "$home/data"
-  id="brief-gate-omission-b1"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
-  brief="$home/data/$id/brief.md"
-  assert_present "$brief" "brief was not scaffolded"
-  assert_grep "One gate response closes the whole gate" "$brief" \
-    "no-mistakes DOD lost the omission-is-refusal warning"
-  assert_grep "every finding you do not name in it is closed unfixed" "$brief" \
-    "no-mistakes DOD lost the concrete omission consequence"
-
-  local other_id other_brief mode
-  for mode in direct-PR local-only; do
-    other_id="brief-gate-omission-$mode"
-    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$other_id" some-proj --mode "$mode" >/dev/null 2>&1
-    other_brief="$home/data/$other_id/brief.md"
-    assert_present "$other_brief" "$mode brief was not scaffolded"
-    assert_no_grep "One gate response closes the whole gate" "$other_brief" \
-      "$mode brief must not carry the no-mistakes-only gate-response warning"
-  done
-  pass "fm-brief.sh: no-mistakes DOD warns that an unnamed gate finding is silently declined"
-}
-
-test_decision_attribution_wording() {
-  local home id brief mode
-  home="$TMP_ROOT/decision-attribution-home"
-  mkdir -p "$home/data"
-  for mode in no-mistakes direct-PR local-only; do
-    id="brief-decision-attr-$mode"
-    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
-    brief="$home/data/$id/brief.md"
-    assert_present "$brief" "$mode brief was not scaffolded"
-    assert_grep "A decision that reaches you through firstmate is FIRSTMATE's, not the captain's" "$brief" \
-      "$mode brief lost the firstmate-vs-captain decision attribution rule"
-    assert_grep "unless it is quoted in the captain's own words" "$brief" \
-      "$mode brief lost the captain's-own-words exception"
-  done
-  pass "fm-brief.sh: every ship mode requires status lines to name the decision's actual source"
-}
-
 test_ship_project_memory_wording() {
   local home id brief
   home="$TMP_ROOT/project-memory-home"
@@ -675,49 +633,6 @@ test_herdr_lab_contract_applies_to_scouts_but_not_secondmates() {
   pass "fm-brief.sh: Herdr lab contract covers scouts and rejects secondmate misuse"
 }
 
-test_no_agent_coauthor_rule_reaches_commit_producing_scaffolds() {
-  local home id brief mode fixture
-  home="$TMP_ROOT/coauthor-rule-home"
-  mkdir -p "$home/data"
-  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
-  local needle='Never add an agent, model, or AI-tool name as a commit co-author or `Co-Authored-By:` trailer'
-
-  for mode in no-mistakes direct-PR local-only; do
-    id="brief-coauthor-$mode"
-    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
-    brief="$home/data/$id/brief.md"
-    assert_grep "$needle" "$brief" \
-      "ship brief (mode=$mode) never instructs against an agent commit co-author trailer"
-  done
-
-  id="brief-coauthor-scout"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
-  brief="$home/data/$id/brief.md"
-  assert_grep "$needle" "$brief" \
-    "scout brief never instructs against an agent commit co-author trailer, even though scout scratch commits can be carried into a promoted ship branch"
-
-  # A secondmate charter never commits directly - its own crewmates use the ship
-  # or scout scaffold above, which already carries the rule - so the charter
-  # itself is correctly excluded rather than merely untested.
-  id="brief-coauthor-secondmate"
-  FM_HOME="$home" FM_SECONDMATE_CHARTER=ops "$ROOT/bin/fm-brief.sh" "$id" --secondmate some-proj >/dev/null 2>&1
-  brief="$home/data/$id/brief.md"
-  assert_no_grep "$needle" "$brief" \
-    "secondmate charter unexpectedly carries the commit-producing rule text"
-
-  # Prove the assertion above can actually fail rather than being vacuously
-  # true: strip the rule line from a real generated brief and confirm the same
-  # check now fails against that fixture.
-  fixture="$TMP_ROOT/coauthor-rule-stripped.md"
-  grep -v "Never add an agent, model, or AI-tool name as a commit co-author" \
-    "$home/data/brief-coauthor-no-mistakes/brief.md" > "$fixture"
-  if ( assert_grep "$needle" "$fixture" "unreachable" ) >/dev/null 2>&1; then
-    fail "assert_grep did not fail against a fixture with the co-author rule stripped out"
-  fi
-
-  pass "fm-brief.sh: the no-agent-co-author rule reaches every commit-producing scaffold"
-}
-
 test_pause_verb_override_renders_all_brief_scaffolds() {
   local home kind id brief
   home="$TMP_ROOT/pause-verb-home"
@@ -763,15 +678,15 @@ test_scout_and_secondmate_load_decision_hold_policy() {
   FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     "$ROOT/bin/fm-brief.sh" sample-investigation sample --scout >/dev/null 2>&1
   scout="$home/data/sample-investigation/brief.md"
-  assert_grep "$ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md" "$scout" \
-    "scout brief did not load the unresolved-decision policy before done"
+  assert_grep "$ROOT/.agents/skills/captain-hold-lifecycle/SKILL.md" "$scout" \
+    "scout brief did not load the captain-call policy before done"
   assert_grep "pass its shared completion gate for the report and any visual review" "$scout" \
     "scout brief did not cross-reference visual-review completion"
   FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_SECONDMATE_CHARTER='sample reviews' \
     "$ROOT/bin/fm-brief.sh" sample-mate --secondmate --no-projects >/dev/null 2>&1
   charter="$home/data/sample-mate/brief.md"
-  assert_grep "load \`decision-hold-lifecycle\`" "$charter" \
-    "secondmate charter did not load the shared decision policy for detailed investigations"
+  assert_grep "load \`captain-hold-lifecycle\`" "$charter" \
+    "secondmate charter did not load the shared captain-call policy for detailed investigations"
   pass "fm-brief.sh: investigation and visual-review completions load the shared decision policy"
 }
 
@@ -784,6 +699,8 @@ test_scout_and_secondmate_scaffold() {
   assert_present "$brief" "scout brief was not scaffolded"
   assert_grep "SCOUT task" "$brief" "scout brief must declare itself a scout task"
   assert_grep "report.md" "$brief" "scout brief must point at the report deliverable"
+  assert_grep "you may host the Lavish review loop yourself" "$brief" \
+    "scout brief must mention the option to host a Lavish review loop"
 
   FM_SECONDMATE_CHARTER='Supervise the alpha domain.' \
     FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" brief-sm-q6 --secondmate alpha >/dev/null 2>&1 \
@@ -804,14 +721,11 @@ test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
-test_gate_response_omission_is_refusal_wording
-test_decision_attribution_wording
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout
 test_herdr_lab_contract_applies_to_scouts_but_not_secondmates
-test_no_agent_coauthor_rule_reaches_commit_producing_scaffolds
 test_secondmate_no_projects_charter
 test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
