@@ -1,0 +1,26 @@
+REPLICA ABSORB VERIFICATION — fm/fm-absorb-upstream-2026-08-23
+base   c3e3501 (PR #12 replica @ upstream 738460d + vocab)
+target 262b8ba (replica moved to upstream tip 8714c9a + vocab)
+
+== 1. Replica property: vocabulary commit only modifies AGENTS.md atop the pure absorb tree ==
+files changed between absorb tree (0141fa3) and HEAD (262b8ba):
+    AGENTS.md
+  -> everything except AGENTS.md is the absorbed upstream tree verbatim; the only house edit is the AGENTS.md vocabulary.
+
+== 2. House vocabulary present in final AGENTS.md; no leftover first-mate / nautical wording ==
+    Primarch           x5
+    Machine Spirit     x1
+    Servitor           x4
+    heresy             x3
+    For the Emperor    x1
+    Omnissiah          x1
+    leftover 'first mate' role prose : 0
+    leftover nautical (ahoy/shipshape): 0
+
+== 3. Targeted tests on the absorbed tree (bash version 5.3.15) ==
+    tests/fm-watcher-lock.test.sh -> exit=0  ok=31  fail=0
+    tests/fm-ask-user-authority.test.sh -> exit=0  ok=1  fail=0
+
+== 4. Merge guard: no Co-Authored-By trailer on the two new commits ==
+    0141fa3 : 0 trailer(s)
+    262b8ba : 0 trailer(s)
