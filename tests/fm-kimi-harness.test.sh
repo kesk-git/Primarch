@@ -70,7 +70,10 @@ case "${1:-}" in
     prev=
     literal=
     for arg in "$@"; do
-      if [ "$prev" = -l ]; then literal=$arg; break; fi
+      if [ "$prev" = -l ]; then
+        [ "$arg" = -- ] && continue
+        literal=$arg; break
+      fi
       prev=$arg
     done
     if [ -n "$literal" ]; then

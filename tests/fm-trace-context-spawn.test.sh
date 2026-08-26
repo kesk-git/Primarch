@@ -67,6 +67,7 @@ case "${1:-}" in
         case "$a" in
           -t) skip_next=1; continue ;;
           -l) continue ;;
+          --) continue ;;
           Enter|C-m) continue ;;
           *) printf '%s\n' "$a" >> "$FM_FAKE_LAUNCH_LOG" ;;
         esac
