@@ -24,17 +24,15 @@ case "${1:-}" in
   send-keys)
     shift
     literal=0
-    dashterm=0
     target=
     while [ $# -gt 0 ]; do
       case "$1" in
         -t) target=$2; shift 2 ;;
         -l) literal=1; shift ;;
-        --) dashterm=1; shift ;;
         *) break ;;
       esac
     done
-    printf 'send-keys target=%s literal=%s arg=%s dashterm=%s\n' "$target" "$literal" "${1:-}" "$dashterm" >> "$FM_TMUX_LOG"
+    printf 'send-keys target=%s literal=%s arg=%s\n' "$target" "$literal" "${1:-}" >> "$FM_TMUX_LOG"
     # FM_FAKE_TMUX_SEND_KEY_FAIL names one key whose delivery fails, so the
     # --key exit contract can be driven both ways from the same stub.
     if [ "$literal" = 0 ] && [ -n "${FM_FAKE_TMUX_SEND_KEY_FAIL:-}" ] \
@@ -103,8 +101,11 @@ test_exact_lane_id_send_still_works() {
     "$SEND" mpf-lane-m8 "lost dispatch" >/dev/null 2>"$err"; rc=$?
   expect_code 0 "$rc" "exact task id send should succeed when metadata exists"
   got=$(cat "$log")
-  assert_contains "$got" "target=sess:fm-mpf-lane-m8 literal=1 arg=lost dispatch" "exact id should type literal text to the meta target"
-  assert_contains "$got" "target=sess:fm-mpf-lane-m8 literal=0 arg=Enter" "exact id should submit with Enter"
+  assert_contains "$got" "target=sess:fm-mpf-lane-m8 literal=1 arg=Firstmate instruction waiting" \
+    "exact id should ring the doorbell at the meta target"
+  assert_contains "$got" "target=sess:fm-mpf-lane-m8 literal=0 arg=Enter" "exact id should submit the doorbell with Enter"
+  grep -qF 'lost dispatch' "$home/state/mpf-lane-m8.inbox/001.msg" \
+    || fail "exact id should record the steer in the task inbox"
   pass "fm-send strict: exact task/lane ids resolve through home metadata"
 }
 
@@ -193,31 +194,13 @@ test_healthy_fm_id_send_still_works() {
     "$SEND" fm-lane-ok "hello captain" >/dev/null 2>"$err"; rc=$?
   expect_code 0 "$rc" "healthy fm-id send should succeed"
   got=$(cat "$log")
-  assert_contains "$got" "target=sess:fm-lane-ok literal=1 arg=hello captain" "healthy send should type literal text to the meta target"
-  assert_contains "$got" "target=sess:fm-lane-ok literal=0 arg=Enter" "healthy send should submit with Enter"
+  assert_contains "$got" "target=sess:fm-lane-ok literal=1 arg=Firstmate instruction waiting" \
+    "healthy send should ring the doorbell at the meta target"
+  assert_contains "$got" "target=sess:fm-lane-ok literal=0 arg=Enter" "healthy send should submit the doorbell with Enter"
+  grep -qF 'hello captain' "$home/state/lane-ok.inbox/001.msg" \
+    || fail "healthy send should record the steer in the task inbox"
   assert_contains "$(cat "$err")" "requested message WILL still be sent" "fm-send guard banner should keep send-specific continuation wording"
-  pass "fm-send strict: healthy fm-<id> sends still type once and submit"
-}
-
-# A message that starts with "-" must still reach the pane: without the "--"
-# option terminator on the tmux literal-send call, tmux parses a leading "-"
-# as its own flag and rejects the whole command (rc=1), which fm-send then
-# misreports as a bare "tmux send failed" with no hint of the real cause.
-test_dash_prefixed_message_sends_literally() {
-  local dir fb home err log rc got
-  dir="$TMP_ROOT/dash-prefixed"; mkdir -p "$dir"
-  fb=$(make_stubs "$dir"); home=$(setup_home dashprefixed)
-  err="$dir/send.err"; log="$dir/tmux.log"; : > "$log"
-  fm_write_meta "$home/state/lane-dash.meta" "window=sess:fm-lane-dash" "kind=ship"
-
-  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
-    "$SEND" fm-lane-dash "-1 for the rewrite, keep the current API" >/dev/null 2>"$err"; rc=$?
-  expect_code 0 "$rc" "a message starting with - should still be delivered"
-  got=$(cat "$log")
-  assert_contains "$got" "target=sess:fm-lane-dash literal=1 arg=-1 for the rewrite, keep the current API dashterm=1" \
-    "a dash-prefixed message should reach tmux as a literal via -l -- <text>"
-  assert_contains "$got" "target=sess:fm-lane-dash literal=0 arg=Enter" "dash-prefixed send should still submit with Enter"
-  pass "fm-send strict: a message starting with - is delivered via the -- option terminator"
+  pass "fm-send strict: healthy fm-<id> sends record the steer and ring once"
 }
 
 # A --key send is how firstmate interrupts a worker, so its exit status is the
@@ -256,4 +239,3 @@ test_prefixless_herdr_pane_id_fails
 test_unmatched_single_colon_target_must_exist
 test_fm_prefixed_herdr_session_is_an_explicit_target
 test_healthy_fm_id_send_still_works
-test_dash_prefixed_message_sends_literally

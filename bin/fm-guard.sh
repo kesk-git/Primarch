@@ -220,10 +220,8 @@ if [ "$watcher_healthy" = false ]; then
       printf '●%s\n' "$rule"
     } >&2
   else
-    autoarm_note=''
-    [ "$(fm_supervision_model)" = autoarm ] && autoarm_note=' (auto-arm model: expected mid-turn, see docs/turnend-guard.md)'
-    printf 'WARNING: watcher still down (same stale episode; last beat: %s, grace %ss)%s - full banner already printed this episode.\n' \
-      "$beacon_desc" "$GRACE" "$autoarm_note" >&2
+    printf 'WARNING: watcher still down (same stale episode; last beat: %s, grace %ss) - full banner already printed this episode.\n' \
+      "$beacon_desc" "$GRACE" >&2
   fi
 else
   # Healthy again while work is still in flight: end the episode so a later
