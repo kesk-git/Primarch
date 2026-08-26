@@ -285,6 +285,9 @@ fm_tmux_submit_core() {  # <target> <text> <retries> <enter-sleep> <settle>
   # Enter, so only a clean idle-to-busy transition may confirm a submit.
   baseline_state=$(fm_pane_busy_state "$target")
   [ "$baseline_state" = idle ] && baseline_idle=1
+  # "--" keeps a text that starts with "-" from being parsed as a tmux flag,
+  # and tmux's own stderr is left visible so a real failure names its cause
+  # (tests/fm-send-strict.test.sh: test_dash_prefixed_message_sends_literally).
   tmux send-keys -t "$target" -l -- "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"
   fm_tmux_submit_enter_core "$target" "$retries" "$sleep_s" "$baseline_idle"
