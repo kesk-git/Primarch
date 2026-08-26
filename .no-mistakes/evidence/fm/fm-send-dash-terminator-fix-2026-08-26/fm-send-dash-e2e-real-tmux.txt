@@ -1,0 +1,31 @@
+Real tmux (tmux 3.7c) end-to-end: fm-send.sh delivering a dash-prefixed message to a throwaway tmux session (window fm-lane-dash running an interactive sh).
+FM_GATE_REFUSE_BYPASS=1 is the test harness's documented bypass; the target pane is a scratch session, not the fleet. FM_GUARD_GRACE=999999 quiets the unrelated watcher-down banner.
+
+### BASE c5523e6: fm-send.sh fm-lane-dash "-1 for the rewrite, keep the current API"
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 999999s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the requested message WILL still be sent.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+error: text not sent to fmdash99548:fm-lane-dash (tmux send failed; tried meta=<home>/state/lane-dash.meta; backend=from-meta)
+exit=1
+--- pane content:
+    $
+
+### TARGET deab129: fm-send.sh fm-lane-dash "-1 for the rewrite, keep the current API"
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 999999s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the requested message WILL still be sent.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+error: text not submitted to fmdash99548:fm-lane-dash (delivery unconfirmed; verdict=unknown; tried meta=<home>/state/lane-dash.meta; backend=from-meta)
+exit=1
+--- pane content:
+    $ -1 for the rewrite, keep the current API
+    sh: -1: command not found
+    $
+

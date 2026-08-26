@@ -1,0 +1,4 @@
+== FM_SUPERVISION_MODEL=autoarm, second same-episode guard call ==
+WARNING: watcher still down (same stale episode; last beat: never, grace 999s) (auto-arm model: expected mid-turn, see docs/turnend-guard.md) - full banner already printed this episode.
+== FM_SUPERVISION_MODEL=persistent, second same-episode guard call ==
+WARNING: watcher still down (same stale episode; last beat: never, grace 999s) - full banner already printed this episode.

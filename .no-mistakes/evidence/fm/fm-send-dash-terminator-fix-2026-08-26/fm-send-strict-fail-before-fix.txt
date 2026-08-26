@@ -1,0 +1,18 @@
+## Regression test tests/fm-send-strict.test.sh::test_dash_prefixed_message_sends_literally
+
+### At TARGET deab129 (bin from this branch):
+ok - fm-send strict: a message starting with - is delivered via the -- option terminator
+
+### At BASE c5523e6 (bin/ from base commit, same test file):
+not ok - a dash-prefixed message should reach tmux as a literal via -l -- <text> (missing: 'target=sess:fm-lane-dash literal=1 arg=-1 for the rewrite, keep the current API dashterm=1')
+send-keys target=sess:fm-lane-dash literal=1 arg=-1 for the rewrite, keep the current API dashterm=0
+send-keys target=sess:fm-lane-dash literal=0 arg=Enter dashterm=0
+
+## Raw tmux tmux 3.7c behaviour behind the defect (scratch session, pane running cat):
+$ tmux send-keys -t e2e -l "-1 for the rewrite, keep the current API"
+command send-keys: unknown flag -1
+rc=1
+$ tmux send-keys -t e2e -l -- "-1 for the rewrite, keep the current API"
+rc=0
+pane after both calls:
+    -1 for the rewrite, keep the current API
