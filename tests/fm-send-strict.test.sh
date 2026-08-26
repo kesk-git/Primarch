@@ -24,15 +24,17 @@ case "${1:-}" in
   send-keys)
     shift
     literal=0
+    dashterm=0
     target=
     while [ $# -gt 0 ]; do
       case "$1" in
         -t) target=$2; shift 2 ;;
         -l) literal=1; shift ;;
+        --) dashterm=1; shift ;;
         *) break ;;
       esac
     done
-    printf 'send-keys target=%s literal=%s arg=%s\n' "$target" "$literal" "${1:-}" >> "$FM_TMUX_LOG"
+    printf 'send-keys target=%s literal=%s arg=%s dashterm=%s\n' "$target" "$literal" "${1:-}" "$dashterm" >> "$FM_TMUX_LOG"
     # FM_FAKE_TMUX_SEND_KEY_FAIL names one key whose delivery fails, so the
     # --key exit contract can be driven both ways from the same stub.
     if [ "$literal" = 0 ] && [ -n "${FM_FAKE_TMUX_SEND_KEY_FAIL:-}" ] \
@@ -197,6 +199,27 @@ test_healthy_fm_id_send_still_works() {
   pass "fm-send strict: healthy fm-<id> sends still type once and submit"
 }
 
+# A message that starts with "-" must still reach the pane: without the "--"
+# option terminator on the tmux literal-send call, tmux parses a leading "-"
+# as its own flag and rejects the whole command (rc=1), which fm-send then
+# misreports as a bare "tmux send failed" with no hint of the real cause.
+test_dash_prefixed_message_sends_literally() {
+  local dir fb home err log rc got
+  dir="$TMP_ROOT/dash-prefixed"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); home=$(setup_home dashprefixed)
+  err="$dir/send.err"; log="$dir/tmux.log"; : > "$log"
+  fm_write_meta "$home/state/lane-dash.meta" "window=sess:fm-lane-dash" "kind=ship"
+
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" fm-lane-dash "-1 for the rewrite, keep the current API" >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "a message starting with - should still be delivered"
+  got=$(cat "$log")
+  assert_contains "$got" "target=sess:fm-lane-dash literal=1 arg=-1 for the rewrite, keep the current API dashterm=1" \
+    "a dash-prefixed message should reach tmux as a literal via -l -- <text>"
+  assert_contains "$got" "target=sess:fm-lane-dash literal=0 arg=Enter" "dash-prefixed send should still submit with Enter"
+  pass "fm-send strict: a message starting with - is delivered via the -- option terminator"
+}
+
 # A --key send is how firstmate interrupts a worker, so its exit status is the
 # only signal that the interrupt actually landed.
 # Reporting success for a key that was never delivered would leave supervision
@@ -233,3 +256,4 @@ test_prefixless_herdr_pane_id_fails
 test_unmatched_single_colon_target_must_exist
 test_fm_prefixed_herdr_session_is_an_explicit_target
 test_healthy_fm_id_send_still_works
+test_dash_prefixed_message_sends_literally

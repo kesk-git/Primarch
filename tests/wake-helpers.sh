@@ -186,12 +186,15 @@ case "${1:-}" in
   send-keys)
     while [ "$#" -gt 0 ]; do
       case "$1" in
-        -l) shift; [ "$#" -gt 0 ] && {
-          printf '%s\n' "$1" >> "${FM_FAKE_TMUX_SENT:-/dev/null}"
-          # Reflect sent text into capture so pane_input_pending sees it as
-          # pending input (text in the composer).
-          [ -n "${FM_FAKE_TMUX_CAPTURE:-}" ] && printf '%s\n' "$1" >> "$FM_FAKE_TMUX_CAPTURE"
-        } ;;
+        -l)
+          shift
+          [ "$#" -gt 0 ] && [ "$1" = "--" ] && shift
+          [ "$#" -gt 0 ] && {
+            printf '%s\n' "$1" >> "${FM_FAKE_TMUX_SENT:-/dev/null}"
+            # Reflect sent text into capture so pane_input_pending sees it as
+            # pending input (text in the composer).
+            [ -n "${FM_FAKE_TMUX_CAPTURE:-}" ] && printf '%s\n' "$1" >> "$FM_FAKE_TMUX_CAPTURE"
+          } ;;
         Enter)
           # Optionally swallow Enter (file-based flag) to test the retry path.
           if [ -n "${FM_FAKE_TMUX_SWALLOW_FILE:-}" ] && [ -f "$FM_FAKE_TMUX_SWALLOW_FILE" ]; then
