@@ -1,0 +1,12 @@
+== c4f1808 (dropped fix) changed files ==
+ tests/fm-send-secondmate-marker.test.sh   |  1 +
+ tests/fm-send-strict.test.sh              | 26 +++++++++++++++++++++++++-
+ tests/fm-spawn-dispatch-profile.test.sh   |  1 +
+ tests/fm-trace-context-spawn.test.sh      |  1 +
+ tests/wake-helpers.sh                     | 15 +++++++++------
+ 19 files changed, 64 insertions(+), 17 deletions(-)
+
+== does HEAD still carry the '-l --' terminator? (expect: no) ==
+not present (fix dropped, as intended)
+
+== HEAD tmux -l send lines in bin/fm-send.sh ==

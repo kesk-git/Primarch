@@ -1,0 +1,31 @@
+== safety sections: pre-absorb (c4f1808) vs HEAD ==
+## 1\. -> lines=33 pre=5153307f74e06dfbc6fab08ea167028c head=5153307f74e06dfbc6fab08ea167028c IDENTICAL
+### Selected delivery path and merge authority -> lines=21 pre=bc1bc6537cdf84b9faa2e023f4457a61 head=bc1bc6537cdf84b9faa2e023f4457a61 IDENTICAL
+### PR ready, landing, and teardown -> lines=16 pre=bb3925d96175f1b089fbe950ab90be52 head=bb3925d96175f1b089fbe950ab90be52 IDENTICAL
+## Captain instruction precedence -> lines=9 pre=0fddc416b4382a7c0c6bebe943f28ff6 head=0fddc416b4382a7c0c6bebe943f28ff6 IDENTICAL
+### Captain instruction precedence -> lines=0 pre=d41d8cd98f00b204e9800998ecf8427e head=d41d8cd98f00b204e9800998ecf8427e IDENTICAL
+
+15:## 1. Identity and prime directives
+48:## 2. Layout and state
+148:## 3. Session start (run once at every session start)
+196:## 4. Harness and runtime dispatch
+222:## 5. Recovery
+237:## 6. Project and knowledge management
+266:## 7. Task lifecycle
+270:### Intake and authority
+305:### Dispatch and supervision handoff
+321:### Selected delivery path and merge authority
+342:### Validate
+366:### PR ready, landing, and teardown
+382:### Scout outcome and promotion
+391:## 8. Supervision protocol
+430:### Away-mode stub
+443:### Stuck-worker trigger
+447:## 9. Escalation and captain etiquette
+494:## 10. Backlog contract
+514:## 11. Crewmate briefs
+529:## 12. Self-update
+536:## 13. Agent-only reference skills
+557:## 14. Relay
+572:## Captain instruction precedence
+581:## Maintaining this file
