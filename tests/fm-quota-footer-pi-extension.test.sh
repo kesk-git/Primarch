@@ -88,7 +88,7 @@ EOF
 }
 
 test_refresh_and_shutdown_lifecycle() {
-  local dir fakebin out
+  local dir fakebin
   dir=$(fm_test_tmproot fm-quota-footer-lifecycle)
   fakebin="$dir/fakebin"
   mkdir -p "$fakebin"
