@@ -93,19 +93,27 @@ function readQuota(): Promise<QuotaPercents> {
 export default function (pi: ExtensionAPI) {
   let timer: ReturnType<typeof setInterval> | undefined;
   let inFlight = false;
+  let generation = 0;
 
   const refresh = async (ui: ExtensionUIContext): Promise<void> => {
     if (inFlight) return;
+    const refreshGeneration = generation;
     inFlight = true;
     try {
       const percents = await readQuota();
-      ui.setStatus(STATUS_KEY, formatQuotaFooter(percents));
+      if (refreshGeneration === generation) {
+        ui.setStatus(STATUS_KEY, formatQuotaFooter(percents));
+      }
     } finally {
-      inFlight = false;
+      if (refreshGeneration === generation) {
+        inFlight = false;
+      }
     }
   };
 
   pi.on("session_start", (_event, ctx) => {
+    generation += 1;
+    inFlight = false;
     void refresh(ctx.ui);
     if (timer) clearInterval(timer);
     timer = setInterval(() => {
@@ -114,6 +122,8 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
+    generation += 1;
+    inFlight = false;
     if (timer) {
       clearInterval(timer);
       timer = undefined;
